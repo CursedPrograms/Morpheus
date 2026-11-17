@@ -1,0 +1,10 @@
+build/
+dist/
+external/imgui-*/
+external/SDL2-*/
+external/stb/
+*.user
+*.suo
+.vs/
+CMakeFiles/
+CMakeCache.txt

@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Morpheus - motion graphics and compositing</title>
+  <meta name="description" content="Morpheus: a motion graphics and compositing app in C++. Compositions, layers, keyframes, effects — After Effects' kind. Part of Atelier.">
+  <link rel="stylesheet" href="site/style.css">
+</head>
+
+<body>
+  <header class="top">
+    <div>
+      <h1>Morpheus</h1>
+      <p class="tag">Motion graphics and compositing: compositions, layers, keyframes, effects. Part of
+        <a href="https://github.com/CursedPrograms/Atelier">Atelier</a>.</p>
+    </div>
+  </header>
+
+  <main>
+    <section class="shot">
+      <img src="images/window.bmp" alt="Morpheus: the app window showing the seven panels — Project, Composition, Timeline, Effect Controls, Tools, Preview, Info">
+    </section>
+
+    <section class="actions">
+      <a class="btn" href="https://github.com/CursedPrograms/Morpheus">Get it on GitHub</a>
+      <a class="btn quiet" href="https://github.com/CursedPrograms/Morpheus#build">How to build</a>
+    </section>
+
+    <section class="grid" id="features"></section>
+
+    <section class="keys" id="requirements">
+      <h2>Minimum requirements</h2>
+      <table class="reqs">
+        <tr><th>System</th><td>Windows 10 or 11, 64-bit (Linux builds from source)</td></tr>
+        <tr><th>Processor</th><td>any 64-bit processor</td></tr>
+        <tr><th>Memory</th><td>4 GB RAM</td></tr>
+        <tr><th>Graphics</th><td>any graphics card with OpenGL 3.3 (2010 or newer)</td></tr>
+        <tr><th>Disk</th><td>20 MB</td></tr>
+      </table>
+    </section>
+
+    <div class="qr">
+      <img id="qr-img" alt="QR code for this page">
+      <p>cursedprograms.github.io/Morpheus</p>
+    </div>
+  </main>
+
+  <footer>
+    <p>Panel layout and project model ported from <a href="https://github.com/storytold/effectcraft">EffectCraft</a> (MIT / Apache-2.0).
+      Built with <a href="https://github.com/ocornut/imgui">Dear ImGui</a>, <a href="https://www.libsdl.org">SDL2</a> and <a href="https://github.com/nothings/stb">stb</a>.</p>
+    <p>&copy; <a href="https://cursed-entertainment.itch.io/">Cursed Entertainment</a> <span id="year">2026</span></p>
+  </footer>
+  <script src="site/site.js"></script>
+</body>
+
+</html>

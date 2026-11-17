@@ -1,0 +1,6 @@
+// Morpheus Windows resource file: application icon.
+#ifdef APSTUDIO_INVOKED
+1 ICON "..\\assets\\icon.ico"
+#else
+1 ICON "..\\assets\\icon.ico"
+#endif
