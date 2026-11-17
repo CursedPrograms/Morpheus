@@ -86,6 +86,8 @@ static void panelHeader(const char* label) {
 // ---------- panel content helpers ----------
 // Each function draws the contents of one panel.
 
+static const Actions* g_actions = nullptr;
+
 static void drawProjectPanel(Project::Project* proj) {
     panelHeader(L("Project"));
     if (!proj) {
@@ -98,7 +100,11 @@ static void drawProjectPanel(Project::Project* proj) {
         const auto& comp = proj->compositions[i];
         const bool active = (i == proj->activeComp);
         if (active) ImGui::PushStyleColor(ImGuiCol_Text, col4(C_BLUE));
-        ImGui::Text("  %s", comp.name.c_str());
+        char id[64];
+        snprintf(id, sizeof id, "  %s##comp%d", comp.name.c_str(), i);
+        if (ImGui::Selectable(id, active)) {
+            if (g_actions && g_actions->onSelectComp) g_actions->onSelectComp(i);
+        }
         if (active) ImGui::PopStyleColor();
     }
 }
@@ -182,7 +188,22 @@ static void drawInfoPanel(Project::Project* proj) {
 }
 
 // ---------- main draw ----------
-void draw(Project::Project* proj) {
+void draw(Project::Project* proj, const Actions& actions) {
+    // Store actions pointer for helpers (avoids threading every panel with the struct).
+    g_actions = &actions;
+
+    // Keyboard shortcuts: Ctrl+N, Ctrl+O, Ctrl+S, Ctrl+Shift+S, Ctrl+Q.
+    const ImGuiIO& io = ImGui::GetIO();
+    if (io.KeyCtrl && !io.KeyShift) {
+        if (ImGui::IsKeyPressed(ImGuiKey_N) && actions.onNew)    actions.onNew();
+        if (ImGui::IsKeyPressed(ImGuiKey_O) && actions.onOpen)   actions.onOpen();
+        if (ImGui::IsKeyPressed(ImGuiKey_S) && actions.onSave)   actions.onSave();
+        if (ImGui::IsKeyPressed(ImGuiKey_Q) && actions.onQuit)   actions.onQuit();
+    }
+    if (io.KeyCtrl && io.KeyShift) {
+        if (ImGui::IsKeyPressed(ImGuiKey_S) && actions.onSaveAs) actions.onSaveAs();
+    }
+
     // Fill the entire OS window; no title bar, no decoration.
     const ImGuiViewport* vp = ImGui::GetMainViewport();
     ImGui::SetNextWindowPos(vp->WorkPos);
@@ -199,12 +220,12 @@ void draw(Project::Project* proj) {
     // ----- Menu bar -----
     if (ImGui::BeginMenuBar()) {
         if (ImGui::BeginMenu(L("File"))) {
-            ImGui::MenuItem(L("New Composition..."),  "Ctrl+N");
-            ImGui::MenuItem(L("Open..."),             "Ctrl+O");
-            ImGui::MenuItem(L("Save"),                "Ctrl+S");
-            ImGui::MenuItem(L("Save As..."),          "Ctrl+Shift+S");
+            if (ImGui::MenuItem(L("New Composition..."),  "Ctrl+N") && actions.onNew)    actions.onNew();
+            if (ImGui::MenuItem(L("Open..."),             "Ctrl+O") && actions.onOpen)   actions.onOpen();
+            if (ImGui::MenuItem(L("Save"),                "Ctrl+S") && actions.onSave)   actions.onSave();
+            if (ImGui::MenuItem(L("Save As..."),    "Ctrl+Shift+S") && actions.onSaveAs) actions.onSaveAs();
             ImGui::Separator();
-            ImGui::MenuItem(L("Quit"),                "Ctrl+Q");
+            if (ImGui::MenuItem(L("Quit"),                "Ctrl+Q") && actions.onQuit)   actions.onQuit();
             ImGui::EndMenu();
         }
         if (ImGui::BeginMenu(L("Edit"))) {

@@ -137,8 +137,35 @@ void frame() {
         ImGui::GetIO().KeyCtrl)
         s_quit = true;
 
+    // Build the action table that panels can call back into.
+    Panels::Actions actions;
+    actions.onNew     = []{ newProject(); };
+    actions.onOpen    = []{
+        const std::string path = fileOpen("Morpheus Projects\0*.morpheus\0All Files\0*.*\0\0");
+        if (!path.empty()) openProject(path);
+    };
+    actions.onSave    = []{
+        if (!s_proj) return;
+        if (s_proj->path.empty()) {
+            const std::string path = fileSave("Morpheus Projects\0*.morpheus\0All Files\0*.*\0\0", "morpheus");
+            if (!path.empty()) saveProject(path);
+        } else {
+            saveProject(s_proj->path);
+        }
+    };
+    actions.onSaveAs  = []{
+        if (!s_proj) return;
+        const std::string path = fileSave("Morpheus Projects\0*.morpheus\0All Files\0*.*\0\0", "morpheus");
+        if (!path.empty()) saveProject(path);
+    };
+    actions.onQuit    = []{ s_quit = true; };
+    actions.onSelectComp = [](int i){
+        if (s_proj && i >= 0 && i < (int)s_proj->compositions.size())
+            s_proj->activeComp = i;
+    };
+
     // Draw all panels; pass the current project (may be nullptr).
-    Panels::draw(s_proj);
+    Panels::draw(s_proj, actions);
 }
 
 bool wantsQuit() { return s_quit; }
@@ -150,9 +177,49 @@ void script(const std::string& name) {
         // Phase 1 test: just open the window; a screenshot is enough.
         SDL_Log("script skeleton: window open, capturing screenshot.");
     } else if (name == "new_project") {
-        // Phase 2 test: create a new project, verify it shows up.
+        // Phase 2 test: create a new project, add a solid layer, save to a temp file,
+        // reload it, and verify the round-trip is correct.
         newProject();
         SDL_Log("script new_project: created project '%s'.", s_proj ? s_proj->name.c_str() : "(null)");
+
+        if (s_proj) {
+            // Add a couple of test layers.
+            Project::Layer solid;
+            solid.name    = "Solid 1";
+            solid.kind    = Project::LayerKind::Solid;
+            solid.solidR  = 200;
+            solid.solidG  = 100;
+            solid.solidB  = 50;
+            solid.outPt   = 10.0;
+            solid.xform.posX = 960;
+            solid.xform.posY = 540;
+            s_proj->compositions[0].layers.push_back(solid);
+
+            Project::Layer nullLayer;
+            nullLayer.name  = "Null 1";
+            nullLayer.kind  = Project::LayerKind::Null;
+            nullLayer.outPt = 10.0;
+            s_proj->compositions[0].layers.push_back(nullLayer);
+
+            // Save to a temp file.
+            const std::string tmpPath = s_prefs + "test_project.morpheus";
+            const bool saved = Project::save(*s_proj, tmpPath);
+            SDL_Log("script new_project: save %s -> %s.", tmpPath.c_str(), saved ? "ok" : "FAILED");
+
+            // Reload and check.
+            Project::Project loaded;
+            const bool ok = Project::load(loaded, tmpPath);
+            SDL_Log("script new_project: load %s.", ok ? "ok" : "FAILED");
+            if (ok) {
+                const bool nameOk  = loaded.compositions[0].name == "Composition 1";
+                const bool layerOk = loaded.compositions[0].layers.size() == 2;
+                const bool kindOk  = loaded.compositions[0].layers[0].kind == Project::LayerKind::Solid;
+                SDL_Log("script new_project: comp name=%s, layers=%s, kind=%s.",
+                    nameOk ? "ok" : "FAIL",
+                    layerOk ? "ok" : "FAIL",
+                    kindOk  ? "ok" : "FAIL");
+            }
+        }
     } else {
         SDL_Log("script '%s': unknown (skipping).", name.c_str());
     }
