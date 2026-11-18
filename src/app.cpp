@@ -194,6 +194,7 @@ void script(const std::string& name) {
             solid.outPt   = Project::Tick::from_seconds_f64(10.0);
             solid.xform.posX = 960;
             solid.xform.posY = 540;
+            solid.initProps(&s_proj->nextId, 960, 540, 960, 540);
             s_proj->compositions[0].layers.push_back(solid);
 
             Project::Layer nullLayer;
@@ -201,6 +202,7 @@ void script(const std::string& name) {
             nullLayer.name  = "Null 1";
             nullLayer.kind  = Project::LayerKind::Null;
             nullLayer.outPt = Project::Tick::from_seconds_f64(10.0);
+            nullLayer.initProps(&s_proj->nextId, 50, 50, 960, 540);
             s_proj->compositions[0].layers.push_back(nullLayer);
 
             // Save to a temp file.
@@ -221,6 +223,7 @@ void script(const std::string& name) {
                     layerOk ? "ok" : "FAIL",
                     kindOk  ? "ok" : "FAIL");
             }
+            std::remove(tmpPath.c_str());
         }
     } else {
         SDL_Log("script '%s': unknown (skipping).", name.c_str());

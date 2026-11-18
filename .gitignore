@@ -8,3 +8,4 @@ external/stb/
 .vs/
 CMakeFiles/
 CMakeCache.txt
+*.morpheus

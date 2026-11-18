@@ -20,11 +20,13 @@
 #define NOMINMAX
 #endif
 #include "time_.h"
+#include "props.h"
 
 #include <cstdint>
 #include <string>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #ifdef min
 #undef min
@@ -219,6 +221,15 @@ struct Layer {
     // Solid colour (RGBA 0..1) for Solid layers.
     float solidR = 0.5f, solidG = 0.5f, solidB = 0.5f, solidA = 1.0f;
 
+    // Full property tree (transform, masks, effects)
+    // after EffectCraft crates/project/src/props.rs
+    Props::PropGroup props;
+
+    // Initialize props with transform, masks, effects
+    void initProps(uint64_t* counter, double anchorX = 0, double anchorY = 0, double posX = 0, double posY = 0);
+    void syncPropsToTransform();
+    void syncTransformToProps();
+
     // Convenience: is this layer an AV layer (has pixels)?
     // after EffectCraft LayerSource::is_av
     bool isAV() const {
@@ -230,6 +241,9 @@ struct Layer {
     bool isActiveAt(Tick t) const {
         return switches.video && t >= inPt && t < outPt;
     }
+
+    bool operator==(const Layer& o) const;
+    bool operator!=(const Layer& o) const { return !(*this == o); }
 };
 
 // ---- Renderer / Resolution -------------------------------------------
@@ -285,6 +299,10 @@ struct Composition {
     std::vector<Layer>  layers;
     std::vector<Guide>  guides;
 
+    // Unique layer name within this composition
+    // after EffectCraft Comp::unique_layer_name
+    std::string uniqueLayerName(const std::string& base) const;
+
     // Convenience: frame duration
     // after EffectCraft Comp::frame_duration
     Tick frameDuration() const { return frameRate.frame_duration(); }
@@ -293,6 +311,9 @@ struct Composition {
 
     // Legacy accessor: fps as double
     double fps() const { return frameRate.as_f64(); }
+
+    bool operator==(const Composition& o) const;
+    bool operator!=(const Composition& o) const { return !(*this == o); }
 };
 
 // ---- ItemKind --------------------------------------------------------
@@ -325,9 +346,22 @@ struct ProjectData {
     // Allocate a unique id.
     // after EffectCraft Project::alloc
     uint64_t alloc() { return nextId++; }
+
+    // Numbered item name (after EffectCraft Project::numbered_item_name)
+    std::string numberedItemName(const std::string& base, std::function<bool(const std::string&)> in_use) const;
+
+    // Serialize to JSON string
+    std::string toJson() const;
+    static bool fromJson(ProjectData& proj, const std::string& json);
+
+    bool operator==(const ProjectData& o) const;
+    bool operator!=(const ProjectData& o) const { return !(*this == o); }
 };
 // Alias for backward compatibility
 using Project = ProjectData;
+
+// Name stem helper (after EffectCraft crates/project/src/item.rs name_stem)
+std::string name_stem(const std::string& base);
 
 // ---- File I/O --------------------------------------------------------
 // Save project to path as JSON; returns true on success.

@@ -11,6 +11,8 @@
 #include "time_.h"
 #include "project.h"
 #include "icons.h"
+#include "keyframe.h"
+#include "props.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -49,8 +51,10 @@ int run() {
             printf("  FAIL  %s\n", t.name.c_str());
             ++fail;
         }
+        fflush(stdout);
     }
     printf("selftest: %d/%d passed\n", pass, pass+fail);
+    fflush(stdout);
     return fail;
 }
 
@@ -499,6 +503,753 @@ static bool t_transform_roundtrip() {
     return true;
 }
 
+static std::pair<Proj, size_t> project_with_layer() {
+    Proj p = Proj::makeNew();
+    auto& comp = p.compositions[0];
+    comp.name = "Main";
+    comp.width = 1920;
+    comp.height = 1080;
+    comp.frameRate = FrameRate::FPS_29_97;
+    comp.duration = Tick::from_seconds_f64(10.0);
+    comp.layers.clear();
+
+    Layer l;
+    l.id.v = p.alloc();
+    l.name = "Red Solid 1";
+    l.kind = LayerKind::Solid;
+    l.label = Label::Red;
+    l.solidR = 1.0f; l.solidG = 0.0f; l.solidB = 0.0f; l.solidA = 1.0f;
+    l.inPt = Tick::ZERO;
+    l.outPt = Tick::from_seconds_f64(10.0);
+    l.initProps(&p.nextId, 960.0, 540.0, 960.0, 540.0);
+    comp.layers.push_back(l);
+
+    return {p, 0};
+}
+
+// after EffectCraft crates/project/src/tests.rs paths_resolve
+static bool t_project_paths_resolve() {
+    auto [p, cid] = project_with_layer();
+    const auto& l = p.compositions[cid].layers[0];
+    const auto* pos = l.props.prop("transform/position");
+    if (!pos || pos->value != KeyframeModel::Value::Vec3(960.0, 540.0, 0.0)) return false;
+    const auto* op = l.props.prop("Transform/Opacity");
+    if (!op || op->value != KeyframeModel::Value::Scalar(100.0)) return false;
+    const auto* rot = l.props.prop("transform/#7");
+    if (!rot || rot->match_id != "rotation") return false;
+    const auto* sc = l.props.prop("transform/scale");
+    if (!sc) return false;
+    auto path = l.props.path_of(sc->uid);
+    if (!path.has_value()) return false;
+    const auto* sc2 = l.props.prop(*path);
+    if (!sc2 || sc2->match_id != "scale") return false;
+    auto npath = l.props.name_path_of(sc->uid);
+    if (!npath.has_value() || *npath != "Transform/Scale") return false;
+    return true;
+}
+
+// after EffectCraft crates/project/src/tests.rs masks_and_occurrence_paths
+static bool t_project_masks_and_occurrence_paths() {
+    auto [p, cid] = project_with_layer();
+    Props::Ids ids(&p.nextId);
+    auto m1 = Props::Build::mask(ids, "Mask 1", KeyframeModel::ShapePath::rect({0.0, 0.0}, 10.0, 10.0), Props::MaskMode::Add, {255, 0, 0});
+    auto m2 = Props::Build::mask(ids, "Mask 2", KeyframeModel::ShapePath::ellipse({0.0, 0.0}, 10.0, 10.0), Props::MaskMode::Subtract, {0, 255, 0});
+    auto& l = p.compositions[cid].layers[0];
+    auto* masks = l.props.sub_mut("masks");
+    if (!masks) return false;
+    masks->children.push_back(Props::Node(std::move(m1)));
+    masks->children.push_back(Props::Node(std::move(m2)));
+    const auto* g2 = l.props.group("masks/mask#2");
+    if (!g2 || g2->name != "Mask 2") return false;
+    const auto* g2n = l.props.group("masks/Mask 2");
+    if (!g2n || g2n->name != "Mask 2") return false;
+    if (!l.props.prop("masks/mask#2/feather")) return false;
+    return true;
+}
+
+// after EffectCraft crates/project/src/tests.rs animate_and_roundtrip_json
+static bool t_project_animate_and_roundtrip_json() {
+    auto [p, cid] = project_with_layer();
+    {
+        auto& l = p.compositions[cid].layers[0];
+        auto* op = l.props.prop_mut("transform/opacity");
+        if (!op) return false;
+        op->set_animated(true, Tick::ZERO);
+        op->set_value_at(Tick::from_seconds_f64(1.0), KeyframeModel::Value::Scalar(0.0));
+        if (op->keys.size() != 2) return false;
+        if (op->value_at(Tick::from_seconds_f64(0.5)) != KeyframeModel::Value::Scalar(50.0)) return false;
+    }
+    std::string json = p.toJson();
+    Proj q;
+    if (!Proj::fromJson(q, json)) return false;
+    if (p != q) return false;
+    return true;
+}
+
+// after EffectCraft crates/project/src/tests.rs numbered_names_keep_digits_that_end_a_word
+static bool t_project_numbered_names() {
+    const std::pair<std::string, std::string> rows[] = {
+        {"v-b1.mp4", "v-b1.mp4 2"},
+        {"clip2.mov", "clip2.mov 2"},
+        {"shot 2", "shot 3"},
+        {"a.b.c", "a.b.c 2"},
+        {"Background", "Background 2"},
+        {"Red Solid 1", "Red Solid 2"},
+    };
+    for (const auto& [name, next] : rows) {
+        Proj p = Proj::makeNew();
+        auto& comp = p.compositions[0];
+        comp.layers.clear();
+        std::string n1 = comp.uniqueLayerName(name);
+        if (n1 != name) return false;
+        Layer l1; l1.name = n1;
+        comp.layers.push_back(l1);
+        std::string n2 = comp.uniqueLayerName(name);
+        if (n2 != next) return false;
+        std::string item_copy = p.numberedItemName(name, [&](const std::string& n) { return n == name; });
+        if (item_copy != next) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/project/src/tests.rs unique_names_and_cycles
+static bool t_project_unique_names() {
+    auto [p, cid] = project_with_layer();
+    const auto& c = p.compositions[cid];
+    if (c.uniqueLayerName("Red Solid 1") != "Red Solid 2") return false;
+    if (c.uniqueLayerName("Shape Layer 1") != "Shape Layer 1") return false;
+
+    Composition d = c;
+    for (const char* n : {"Red Solid 02", "Red Solid 3"}) {
+        Layer l = d.layers[0];
+        l.name = n;
+        d.layers.push_back(l);
+    }
+    if (d.uniqueLayerName("Red Solid 1") != "Red Solid 2") return false;
+
+    Composition e = c;
+    e.layers[0].name = "v-b1.mp4";
+    if (e.uniqueLayerName("v-b1.mp4") != "v-b1.mp4 2") return false;
+    return true;
+}
+
+// after EffectCraft crates/project/src/tests.rs same_content_sees_allocated_ids_and_comp_edits
+static bool t_project_same_content() {
+    auto [p, cid] = project_with_layer();
+    Proj q = p;
+    if (q != p) return false;
+    q.alloc();
+    if (q == p) return false;
+    return true;
+}
+
+static Tick kf_s(double x) {
+    return Tick::from_seconds_f64(x);
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs missing_spatial_keys_have_no_tangents_or_length
+static bool t_kf_missing_spatial_keys() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0))
+    };
+    for (size_t i : { (size_t)1, std::numeric_limits<size_t>::max() }) {
+        auto t = KeyframeModel::spatial_tangents(keys, i);
+        if (t.first != std::array<double, 3>{0,0,0} || t.second != std::array<double, 3>{0,0,0}) return false;
+        if (KeyframeModel::spatial_segment_length(keys, i) != 0.0) return false;
+    }
+    std::vector<KeyframeModel::Keyframe> empty;
+    auto t0 = KeyframeModel::spatial_tangents(empty, 0);
+    if (t0.first != std::array<double, 3>{0,0,0} || t0.second != std::array<double, 3>{0,0,0}) return false;
+    if (KeyframeModel::spatial_segment_length(empty, std::numeric_limits<size_t>::max()) != 0.0) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs time_reverse_handles_deserialized_tick_extremes
+static bool t_kf_time_reverse_extremes() {
+    const std::pair<int64_t, int64_t> ranges[] = {
+        { std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::min() + 10 },
+        { std::numeric_limits<int64_t>::max() - 10, std::numeric_limits<int64_t>::max() },
+        { std::numeric_limits<int64_t>::min(), std::numeric_limits<int64_t>::max() }
+    };
+    for (auto [first, last] : ranges) {
+        std::vector<KeyframeModel::Keyframe> keys = {
+            KeyframeModel::Keyframe(Tick(first), KeyframeModel::Value::Scalar(1.0)),
+            KeyframeModel::Keyframe(Tick(last), KeyframeModel::Value::Scalar(2.0))
+        };
+        KeyframeModel::time_reverse(keys);
+        if (keys[0].time.v != first || keys[0].value != KeyframeModel::Value::Scalar(2.0)) return false;
+        if (keys[1].time.v != last || keys[1].value != KeyframeModel::Value::Scalar(1.0)) return false;
+        KeyframeModel::time_reverse(keys);
+        if (keys[0].value != KeyframeModel::Value::Scalar(1.0)) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs replacing_key_preserves_spatial_metadata
+static bool t_kf_replacing_key_preserves_spatial_metadata() {
+    KeyframeModel::Keyframe key(kf_s(1.0), KeyframeModel::Value::Vec2(20.0, 30.0));
+    key.roving = true;
+    key.spatial_continuous = true;
+    std::vector<KeyframeModel::Keyframe> keys = { key };
+    KeyframeModel::set_key(keys, KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec2(40.0, 50.0)));
+    if (!keys[0].roving) return false;
+    if (!keys[0].spatial_continuous) return false;
+    if (keys[0].value != KeyframeModel::Value::Vec2(40.0, 50.0)) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs temporal_ease_matches_live_ae_with_overlapping_influences
+static bool t_kf_temporal_ease_matches_live_ae() {
+    struct Case {
+        double from, to, out_speed, out_inf, in_speed, in_inf;
+        std::vector<std::pair<double, double>> samples;
+    };
+    const Case cases[] = {
+        {0.0, 100.0, 0.0, 0.8, 0.0, 0.8, {{0.1, 0.59243939036327}, {0.25, 4.76438030608764}, {0.4, 18.4284394271562}, {0.75, 95.2356196939123}}},
+        {0.0, 100.0, 20.0, 0.8, 80.0, 0.6, {{0.1, 2.25754942621577}, {0.25, 6.99841889412931}, {0.4, 14.9334636959052}, {0.75, 73.8196785378389}}},
+        {100.0, 0.0, -20.0, 0.6, -80.0, 0.8, {{0.1, 97.6395466334594}, {0.25, 91.597048571292}, {0.4, 74.5367957474338}, {0.75, 22.3789127753126}}}
+    };
+    for (const auto& c : cases) {
+        KeyframeModel::Keyframe a(kf_s(0.0), KeyframeModel::Value::Scalar(c.from));
+        KeyframeModel::Keyframe b(kf_s(1.0), KeyframeModel::Value::Scalar(c.to));
+        a.out_interp = KeyframeModel::Interp::Bezier;
+        b.in_interp = KeyframeModel::Interp::Bezier;
+        a.out_ease = { KeyframeModel::Ease{c.out_speed, c.out_inf} };
+        b.in_ease = { KeyframeModel::Ease{c.in_speed, c.in_inf} };
+        std::vector<KeyframeModel::Keyframe> keys = { a, b };
+        for (auto [t, expected] : c.samples) {
+            auto val = KeyframeModel::evaluate(keys, kf_s(t), false);
+            if (!val.has_value()) return false;
+            if (std::fabs(val->as_f64() - expected) >= 1e-7) return false;
+            double norm = KeyframeModel::ease_progress(c.out_speed / (c.to - c.from), c.out_inf,
+                                                      c.in_speed / (c.to - c.from), c.in_inf, t);
+            if (std::fabs((c.from + norm * (c.to - c.from)) - expected) >= 1e-7) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs maximum_influence_resolves_flat_midpoint_time_curve
+static bool t_kf_maximum_influence() {
+    auto bez = [](double p0, double p1, double p2, double p3, double u) {
+        double v = 1.0 - u;
+        return v * v * v * p0 + 3.0 * v * v * u * p1 + 3.0 * v * u * u * p2 + u * u * u * p3;
+    };
+    for (double time : { 0.5 - 1e-9, 0.5 - 1e-12, 0.5, 0.5 + 1e-12, 0.5 + 1e-9 }) {
+        double u = 0.5 + std::cbrt((time - 0.5) / 4.0);
+        double expected = bez(0.0, 0.0, 1.0, 1.0, u);
+        double actual = KeyframeModel::ease_progress(0.0, 1.0, 0.0, 1.0, time);
+        if (std::fabs(actual - expected) >= 1e-10) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs keyed_orientation_matches_after_effects
+static bool t_kf_keyed_orientation() {
+    auto close = [](const KeyframeModel::Value& v, std::array<double, 3> e) {
+        auto v3 = v.as_vec3();
+        for (int i = 0; i < 3; ++i) {
+            if (std::fabs(v3[i] - e[i]) >= 2e-3) return false;
+        }
+        return true;
+    };
+    std::vector<KeyframeModel::Keyframe> lin = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec3(60.0, 80.0, 40.0))
+    };
+    auto v0_5 = KeyframeModel::evaluate_orientation(lin, kf_s(0.5));
+    if (!v0_5 || !close(*v0_5, {16.9201, 16.0688, 16.0629})) return false;
+    auto v1_0 = KeyframeModel::evaluate_orientation(lin, kf_s(1.0));
+    if (!v1_0 || !close(*v1_0, {30.6186, 35.7617, 28.4317})) return false;
+    auto v2_0 = KeyframeModel::evaluate_orientation(lin, kf_s(2.0));
+    if (!v2_0 || !close(*v2_0, {60.0, 80.0, 40.0})) return false;
+
+    // Middle key
+    std::vector<KeyframeModel::Keyframe> three = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec3(0.0, 120.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0))
+    };
+    auto mid = KeyframeModel::evaluate_orientation(three, kf_s(1.0));
+    if (!mid || *mid != KeyframeModel::Value::Vec3(0.0, 120.0, 0.0)) return false;
+
+    // Eased
+    std::vector<KeyframeModel::Keyframe> eased = lin;
+    for (auto& k : eased) {
+        k = k.eased();
+        k.in_ease = { KeyframeModel::Ease{0.0, 0.33} };
+        k.out_ease = { KeyframeModel::Ease{0.0, 0.33} };
+    }
+    auto ev0_5 = KeyframeModel::evaluate_orientation(eased, kf_s(0.5));
+    if (!ev0_5 || !close(*ev0_5, {11.0974, 9.5750, 10.5916})) return false;
+    auto ev1_0 = KeyframeModel::evaluate_orientation(eased, kf_s(1.0));
+    if (!ev1_0 || !close(*ev1_0, {30.6186, 35.7617, 28.4317})) return false;
+    auto ev1_5 = KeyframeModel::evaluate_orientation(eased, kf_s(1.5));
+    if (!ev1_5 || !close(*ev1_5, {47.6915, 65.7590, 40.3338})) return false;
+
+    // Held
+    std::vector<KeyframeModel::Keyframe> held = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec3(1.0, 2.0, 3.0)).hold(),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0))
+    };
+    auto hv = KeyframeModel::evaluate_orientation(held, kf_s(0.5));
+    if (!hv || !close(*hv, {1.0, 2.0, 3.0})) return false;
+
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs linear_and_hold
+static bool t_kf_linear_and_hold() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(100.0))
+    };
+    if (KeyframeModel::evaluate(keys, kf_s(1.0), false) != KeyframeModel::Value::Scalar(50.0)) return false;
+    if (KeyframeModel::evaluate(keys, kf_s(-1.0), false) != KeyframeModel::Value::Scalar(0.0)) return false;
+    if (KeyframeModel::evaluate(keys, kf_s(3.0), false) != KeyframeModel::Value::Scalar(100.0)) return false;
+
+    std::vector<KeyframeModel::Keyframe> held = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)).hold(),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(100.0))
+    };
+    if (KeyframeModel::evaluate(held, kf_s(1.999), false) != KeyframeModel::Value::Scalar(0.0)) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs hold_key_keeps_its_incoming_segment_linear
+static bool t_kf_hold_key_incoming_linear() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(100.0)).hold()
+    };
+    if (KeyframeModel::evaluate(keys, kf_s(0.5), false) != KeyframeModel::Value::Scalar(25.0)) return false;
+
+    std::vector<KeyframeModel::Keyframe> spatial_keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(100.0, 0.0)).hold()
+    };
+    auto p = KeyframeModel::evaluate(spatial_keys, kf_s(0.5), true);
+    if (!p) return false;
+    auto v2 = p->as_vec2();
+    if (std::fabs(v2[0] - 25.0) >= 0.01) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs easy_ease_is_symmetric_and_slow_at_ends
+static bool t_kf_easy_ease() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)).eased(),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Scalar(100.0)).eased()
+    };
+    auto mid = KeyframeModel::evaluate(keys, kf_s(0.5), false);
+    if (!mid || std::fabs(mid->as_f64() - 50.0) >= 1e-6) return false;
+    auto early = KeyframeModel::evaluate(keys, kf_s(0.1), false);
+    if (!early || early->as_f64() >= 10.0 || early->as_f64() <= 0.0) return false;
+    double v0 = KeyframeModel::velocity(keys, kf_s(0.01), false)[0];
+    double vm = KeyframeModel::velocity(keys, kf_s(0.5), false)[0];
+    if (v0 >= vm) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs bezier_with_linear_speed_matches_linear
+static bool t_kf_bezier_linear_speed() {
+    KeyframeModel::Keyframe a(kf_s(0.0), KeyframeModel::Value::Scalar(0.0));
+    KeyframeModel::Keyframe b(kf_s(2.0), KeyframeModel::Value::Scalar(100.0));
+    a.out_interp = KeyframeModel::Interp::Bezier;
+    b.in_interp = KeyframeModel::Interp::Bezier;
+    a.out_ease = { KeyframeModel::Ease{50.0, 1.0 / 3.0} };
+    b.in_ease = { KeyframeModel::Ease{50.0, 1.0 / 3.0} };
+    std::vector<KeyframeModel::Keyframe> keys = { a, b };
+    for (int i = 0; i <= 20; ++i) {
+        double t = i * 0.1;
+        auto v = KeyframeModel::evaluate(keys, kf_s(t), false);
+        if (!v || std::fabs(v->as_f64() - 50.0 * t) >= 1e-6) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs a_linear_side_next_to_an_eased_side_matches_after_effects
+static bool t_kf_linear_side_next_to_eased() {
+    KeyframeModel::Keyframe a(kf_s(2.0), KeyframeModel::Value::Scalar(3.5));
+    a.out_interp = KeyframeModel::Interp::Bezier;
+    a.out_ease = { KeyframeModel::Ease{0.0, 0.5} };
+    std::vector<KeyframeModel::Keyframe> keys = { a, KeyframeModel::Keyframe(kf_s(4.0), KeyframeModel::Value::Scalar(0.5)) };
+    for (auto [t, ae] : std::vector<std::pair<double, double>>{{2.5, 3.290}, {3.0, 2.657}}) {
+        auto v = KeyframeModel::evaluate(keys, kf_s(t), false);
+        if (!v || std::fabs(v->as_f64() - ae) >= 2.0 / 455.0) return false;
+    }
+    // Mirror
+    KeyframeModel::Keyframe b(kf_s(4.0), KeyframeModel::Value::Scalar(0.5));
+    b.in_interp = KeyframeModel::Interp::Bezier;
+    b.in_ease = { KeyframeModel::Ease{0.0, 0.5} };
+    std::vector<KeyframeModel::Keyframe> mirror = { KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(3.5)), b };
+    auto v = KeyframeModel::evaluate(mirror, kf_s(3.5), false);
+    if (!v || std::fabs(v->as_f64() - (4.0 - 3.290)) >= 2.0 / 455.0) return false;
+    auto se = KeyframeModel::side_ease(keys, 1, 0, false, false);
+    if (!se || std::fabs(se->influence - KeyframeModel::LINEAR_SIDE_INFLUENCE) >= 1e-9) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs orientation_linear_side_next_to_an_eased_side_matches_a_scalar
+static bool t_kf_orientation_linear_side() {
+    std::vector<KeyframeModel::Ease> ease = { KeyframeModel::Ease{0.0, 0.5} };
+    KeyframeModel::Keyframe a(kf_s(2.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0));
+    KeyframeModel::Keyframe sa(kf_s(2.0), KeyframeModel::Value::Scalar(0.0));
+    a.out_interp = KeyframeModel::Interp::Bezier; a.out_ease = ease;
+    sa.out_interp = KeyframeModel::Interp::Bezier; sa.out_ease = ease;
+    std::vector<KeyframeModel::Keyframe> orient = { a, KeyframeModel::Keyframe(kf_s(4.0), KeyframeModel::Value::Vec3(0.0, 0.0, 90.0)) };
+    std::vector<KeyframeModel::Keyframe> scalar = { sa, KeyframeModel::Keyframe(kf_s(4.0), KeyframeModel::Value::Scalar(90.0)) };
+
+    KeyframeModel::Keyframe b(kf_s(4.0), KeyframeModel::Value::Vec3(0.0, 0.0, 90.0));
+    KeyframeModel::Keyframe sb(kf_s(4.0), KeyframeModel::Value::Scalar(90.0));
+    b.in_interp = KeyframeModel::Interp::Bezier; b.in_ease = ease;
+    sb.in_interp = KeyframeModel::Interp::Bezier; sb.in_ease = ease;
+    std::vector<KeyframeModel::Keyframe> orient_m = { KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec3(0.0, 0.0, 0.0)), b };
+    std::vector<KeyframeModel::Keyframe> scalar_m = { KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(0.0)), sb };
+
+    for (auto [o, sc] : std::vector<std::pair<const std::vector<KeyframeModel::Keyframe>*, const std::vector<KeyframeModel::Keyframe>*>>{{&orient, &scalar}, {&orient_m, &scalar_m}}) {
+        for (double t : {2.25, 2.5, 3.0, 3.5, 3.75}) {
+            auto v = KeyframeModel::evaluate_orientation(*o, kf_s(t));
+            auto want = KeyframeModel::evaluate(*sc, kf_s(t), false);
+            if (!v || !want) return false;
+            auto v3 = v->as_vec3();
+            if (std::fabs(v3[2] - want->as_f64()) >= 1e-6 || std::fabs(v3[0]) >= 1e-9 || std::fabs(v3[1]) >= 1e-9) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs spatial_linear_constant_speed
+static bool t_kf_spatial_linear_constant_speed() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec2(300.0, 400.0))
+    };
+    auto p = KeyframeModel::evaluate(keys, kf_s(0.5), true);
+    if (!p) return false;
+    auto v2 = p->as_vec2();
+    if (std::fabs(v2[0] - 150.0) >= 0.5 || std::fabs(v2[1] - 200.0) >= 0.5) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs spatial_curved_path_has_smooth_constant_speed
+static bool t_kf_spatial_curved_speed() {
+    KeyframeModel::Keyframe a(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0));
+    KeyframeModel::Keyframe b(kf_s(2.0), KeyframeModel::Value::Vec2(400.0, 0.0));
+    a.spatial_auto = false;
+    b.spatial_auto = false;
+    a.spatial_out = {50.0, -300.0, 0.0};
+    b.spatial_in = {80.0, 250.0, 0.0};
+    std::vector<KeyframeModel::Keyframe> keys = { a, b };
+    double len = KeyframeModel::spatial_segment_length(keys, 0);
+    for (int i = 1; i < 400; ++i) {
+        double v = KeyframeModel::speed(keys, kf_s(i * 0.005), true);
+        if (std::fabs(v - len / 2.0) >= 1e-3 * len) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs spatial_auto_bezier_passes_through_keys
+static bool t_kf_spatial_auto_bezier_passes() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec2(100.0, 100.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(200.0, 0.0))
+    };
+    auto p = KeyframeModel::evaluate(keys, kf_s(1.0), true);
+    if (!p || p->as_vec2() != std::array<double, 2>{100.0, 100.0}) return false;
+    auto m = KeyframeModel::evaluate(keys, kf_s(0.5), true);
+    if (!m) return false;
+    auto mv = m->as_vec2();
+    if (std::fabs(mv[0] - mv[1]) <= 1.0) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs straight_auto_bezier_path_is_exact
+static bool t_kf_straight_auto_bezier() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(40.0, 50.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(120.0, 50.0))
+    };
+    if (KeyframeModel::segment_value(keys, 0, kf_s(1.0), true) != KeyframeModel::Value::Vec2(80.0, 50.0)) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs overflowing_or_nan_motion_paths_evaluate
+static bool t_kf_overflowing_motion_paths() {
+    const std::vector<std::vector<std::array<double, 2>>> paths = {
+        {{-1.7e308, 0.0}, {1.7e308, 0.0}, {-1.7e308, 5.0}},
+        {{0.0, 0.0}, {std::numeric_limits<double>::quiet_NaN(), 10.0}, {20.0, 0.0}},
+        {{std::numeric_limits<double>::infinity(), 0.0}, {0.0, -std::numeric_limits<double>::infinity()}, {20.0, 0.0}}
+    };
+    for (const auto& path : paths) {
+        std::vector<KeyframeModel::Keyframe> keys;
+        for (size_t i = 0; i < path.size(); ++i) {
+            keys.push_back(KeyframeModel::Keyframe(kf_s((double)i * 2.0), KeyframeModel::Value::Vec2(path[i][0], path[i][1])));
+        }
+        for (bool eased : {false, true}) {
+            if (eased) {
+                for (auto& k : keys) k = k.eased();
+            }
+            for (int f = 0; f <= 40; ++f) {
+                Tick t = kf_s(f * 0.1);
+                auto val = KeyframeModel::evaluate(keys, t, true);
+                if (!val.has_value()) return false;
+                KeyframeModel::speed(keys, t, true);
+            }
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs spatial_auto_bezier_tangents_follow_after_effects
+static bool t_kf_spatial_auto_bezier_tangents() {
+    const std::array<double, 3> p[4] = {
+        {40.0, 300.0, 0.0}, {260.0, 80.0, 20.0}, {700.0, 420.0, -40.0}, {1100.0, 150.0, 0.0}
+    };
+    const double times[4] = {0.0, 0.2, 1.5, 1.8};
+    std::vector<KeyframeModel::Keyframe> keys;
+    for (int i = 0; i < 4; ++i) {
+        keys.push_back(KeyframeModel::Keyframe(kf_s(times[i]), KeyframeModel::Value::Vec3(p[i][0], p[i][1], p[i][2])));
+    }
+    auto sixth = [](std::array<double, 3> a, std::array<double, 3> b) -> std::array<double, 3> {
+        return {(b[0] - a[0]) / 6.0, (b[1] - a[1]) / 6.0, (b[2] - a[2]) / 6.0};
+    };
+    auto neg = [](std::array<double, 3> v) -> std::array<double, 3> {
+        return {-v[0], -v[1], -v[2]};
+    };
+    auto close = [](std::array<double, 3> a, std::array<double, 3> b) {
+        for (int i = 0; i < 3; ++i) {
+            if (std::fabs(a[i] - b[i]) >= 1e-9) return false;
+        }
+        return true;
+    };
+    const std::array<double, 3> want[4] = {sixth(p[0], p[1]), sixth(p[0], p[2]), sixth(p[1], p[3]), sixth(p[2], p[3])};
+    for (size_t i = 0; i < 4; ++i) {
+        auto [tin, tout] = KeyframeModel::spatial_tangents(keys, i);
+        if (!close(tout, want[i]) || !close(tin, neg(want[i]))) return false;
+    }
+    keys[1].time = kf_s(1.2);
+    auto t1 = KeyframeModel::spatial_tangents(keys, 1);
+    if (!close(t1.second, sixth(p[0], p[2]))) return false;
+
+    // Coincident
+    std::vector<KeyframeModel::Keyframe> still = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(5.0, 5.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec2(9.0, 1.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(5.0, 5.0))
+    };
+    auto st1 = KeyframeModel::spatial_tangents(still, 1);
+    if (st1.first != std::array<double, 3>{0,0,0} || st1.second != std::array<double, 3>{0,0,0}) return false;
+    std::vector<KeyframeModel::Keyframe> lone = { still[0] };
+    auto st0 = KeyframeModel::spatial_tangents(lone, 0);
+    if (st0.first != std::array<double, 3>{0,0,0} || st0.second != std::array<double, 3>{0,0,0}) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs auto_spatial_holds_between_identical_keys
+static bool t_kf_auto_spatial_holds() {
+    const std::pair<double, std::array<double, 2>> path[4] = {
+        {0.0, {0.0, 540.0}}, {0.6, {400.0, 540.0}}, {4.4, {400.0, 540.0}}, {5.0, {0.0, 540.0}}
+    };
+    for (bool eased : {false, true}) {
+        std::vector<KeyframeModel::Keyframe> keys;
+        for (const auto& pt : path) {
+            auto k = KeyframeModel::Keyframe(kf_s(pt.first), KeyframeModel::Value::Vec2(pt.second[0], pt.second[1]));
+            if (eased) k = k.eased();
+            keys.push_back(k);
+        }
+        if (KeyframeModel::spatial_tangents(keys, 1).second != std::array<double, 3>{0,0,0}) return false;
+        if (KeyframeModel::spatial_tangents(keys, 2).first != std::array<double, 3>{0,0,0}) return false;
+        for (double t : {0.7, 1.0, 2.5, 4.0, 4.3}) {
+            auto p = KeyframeModel::evaluate(keys, kf_s(t), true);
+            if (!p) return false;
+            auto v3 = p->as_vec3();
+            if (std::fabs(v3[0] - 400.0) >= 1e-6 || std::fabs(v3[1] - 540.0) >= 1e-6) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs set_key_replaces_same_time
+static bool t_kf_set_key_replaces() {
+    std::vector<KeyframeModel::Keyframe> keys;
+    KeyframeModel::set_key(keys, KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Scalar(1.0)).eased());
+    KeyframeModel::set_key(keys, KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)));
+    KeyframeModel::set_key(keys, KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Scalar(5.0)));
+    if (keys.size() != 2) return false;
+    if (keys[1].value != KeyframeModel::Value::Scalar(5.0)) return false;
+    if (keys[1].in_interp != KeyframeModel::Interp::Bezier) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs colors_and_paths_interpolate
+static bool t_kf_colors_and_paths_interpolate() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Color(0.0, 0.0, 0.0, 1.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Color(1.0, 0.5, 0.0, 1.0))
+    };
+    auto c = KeyframeModel::evaluate(keys, kf_s(0.5), false);
+    if (!c || c->as_color() != std::array<float, 4>{0.5f, 0.25f, 0.0f, 1.0f}) return false;
+
+    auto a = KeyframeModel::ShapePath::rect({0.0, 0.0}, 10.0, 10.0);
+    auto b = KeyframeModel::ShapePath::rect({0.0, 0.0}, 20.0, 20.0);
+    std::vector<KeyframeModel::Keyframe> pkeys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Path(a)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Path(b))
+    };
+    auto v = KeyframeModel::evaluate(pkeys, kf_s(0.5), false);
+    if (!v || !v->as_path()) return false;
+    if (std::fabs(v->as_path()->vertices[0][0] - (-7.5)) > 1e-6 ||
+        std::fabs(v->as_path()->vertices[0][1] - (-7.5)) > 1e-6) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs roving_keys_get_constant_speed_times
+static bool t_kf_roving_keys_constant_speed() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(0.2), KeyframeModel::Value::Vec2(300.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(400.0, 0.0))
+    };
+    for (auto& k : keys) k.spatial_auto = false;
+    keys[1].roving = true;
+    if (!KeyframeModel::retime_roving(keys, true)) return false;
+    if (std::fabs(keys[1].time.seconds() - 1.5) >= 1e-6) return false;
+    double v0 = KeyframeModel::speed(keys, kf_s(0.5), true);
+    double v1 = KeyframeModel::speed(keys, kf_s(1.8), true);
+    if (std::fabs(v0 - 200.0) >= 1.0 || std::fabs(v1 - 200.0) >= 1.0) return false;
+    // First/last keys can't rove
+    keys[0].roving = true;
+    KeyframeModel::retime_roving(keys, true);
+    if (keys[0].roving) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs roving_keys_never_share_a_time_with_a_fixed_key
+static bool t_kf_roving_keys_never_share_time() {
+    const double xs_cases[2][4] = {
+        {0.0, 40.0, 120.0, 120.0},
+        {0.0, 0.0, 40.0, 120.0}
+    };
+    for (const auto& xs : xs_cases) {
+        std::vector<KeyframeModel::Keyframe> keys;
+        for (int i = 0; i < 4; ++i) {
+            keys.push_back(KeyframeModel::Keyframe(kf_s(i), KeyframeModel::Value::Vec2(xs[i], 64.0)));
+        }
+        for (auto& k : keys) k.spatial_auto = false;
+        keys[1].roving = true;
+        keys[2].roving = true;
+        KeyframeModel::retime_roving(keys, true);
+        for (size_t i = 0; i + 1 < keys.size(); ++i) {
+            if (keys[i].time.v >= keys[i + 1].time.v) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs side_ease_reports_linear_and_eased_sides
+static bool t_kf_side_ease() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(100.0)).eased()
+    };
+    auto out = KeyframeModel::side_ease(keys, 0, 0, false, true);
+    if (!out || std::fabs(out->speed - 50.0) >= 1e-9) return false;
+    auto inn = KeyframeModel::side_ease(keys, 1, 0, false, false);
+    if (!inn || *inn != KeyframeModel::Ease::EASY) return false;
+    if (KeyframeModel::side_ease(keys, 0, 0, false, false).has_value()) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs time_reverse_mirrors_keys
+static bool t_kf_time_reverse_mirrors() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Scalar(0.0)).eased(),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(5.0)),
+        KeyframeModel::Keyframe(kf_s(4.0), KeyframeModel::Value::Scalar(10.0))
+    };
+    keys[0].out_interp = KeyframeModel::Interp::Hold;
+    KeyframeModel::time_reverse(keys);
+    if (std::llround(keys[0].time.seconds()) != 1) return false;
+    if (std::llround(keys[1].time.seconds()) != 3) return false;
+    if (std::llround(keys[2].time.seconds()) != 4) return false;
+    if (keys[0].value != KeyframeModel::Value::Scalar(10.0)) return false;
+    if (keys[2].in_interp != KeyframeModel::Interp::Hold) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs muted_keys_are_skipped_by_evaluation
+static bool t_kf_muted_keys_skipped() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Scalar(0.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Scalar(100.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Scalar(300.0))
+    };
+    auto at = [&](double t) { return KeyframeModel::evaluate(keys, kf_s(t), false)->as_f64(); };
+    if (std::fabs(at(0.5) - 50.0) >= 1e-9) return false;
+    if (std::fabs(at(1.5) - 200.0) >= 1e-9) return false;
+    keys[1].muted = true;
+    if (std::fabs(at(0.5) - 75.0) >= 1e-9) return false;
+    if (std::fabs(at(1.0) - 150.0) >= 1e-9) return false;
+    if (std::fabs(at(1.5) - 225.0) >= 1e-9) return false;
+    for (auto& k : keys) k.muted = true;
+    if (KeyframeModel::evaluate(keys, kf_s(0.5), false).has_value()) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs muted_key_automation_uses_the_active_neighbours
+static bool t_kf_muted_key_automation() {
+    std::vector<KeyframeModel::Keyframe> keys = {
+        KeyframeModel::Keyframe(kf_s(0.0), KeyframeModel::Value::Vec2(0.0, 0.0)),
+        KeyframeModel::Keyframe(kf_s(1.0), KeyframeModel::Value::Vec2(50.0, 100.0)),
+        KeyframeModel::Keyframe(kf_s(2.0), KeyframeModel::Value::Vec2(100.0, 0.0))
+    };
+    for (auto& k : keys) {
+        k.auto_bezier = true;
+        k.in_interp = KeyframeModel::Interp::Bezier;
+        k.out_interp = KeyframeModel::Interp::Bezier;
+    }
+    auto all = keys;
+    auto active = keys;
+    active.erase(active.begin() + 1);
+    keys[1].muted = true;
+    for (double t : {0.0, 0.25, 0.5, 1.0, 1.5, 1.75, 2.0}) {
+        if (KeyframeModel::evaluate(keys, kf_s(t), true) != KeyframeModel::evaluate(active, kf_s(t), true)) return false;
+    }
+    if (KeyframeModel::evaluate(keys, kf_s(0.5), true) == KeyframeModel::evaluate(all, kf_s(0.5), true)) return false;
+    return true;
+}
+
+// after EffectCraft crates/keyframe/src/tests.rs gradient_tracks_sample_separately
+static bool t_kf_gradient_tracks_sample_separately() {
+    KeyframeModel::Gradient g;
+    g.colors = {{0.0, {1.0f, 0.0f, 0.0f, 0.8f}}, {1.0, {0.0f, 0.0f, 1.0f, 0.4f}}};
+    g.opacities = {{0.0, 0.5f}, {1.0, 0.5f}};
+    auto c = g.color_at(0.5);
+    if (std::fabs(c[0] - 0.5f) > 1e-5f || std::fabs(c[2] - 0.5f) > 1e-5f) return false;
+    if (std::fabs(c[3] - 0.6f) > 1e-5f) return false;
+    if (std::fabs(g.opacity_at(0.5) - 0.5f) > 1e-5f) return false;
+    if (std::fabs(g.sample(0.5)[3] - 0.3f) > 1e-5f) return false;
+
+    auto with_stop = g;
+    with_stop.opacities.insert(with_stop.opacities.begin() + 1, {0.5, g.opacity_at(0.5)});
+    if (std::fabs(with_stop.opacity_at(0.5) - 0.5f) > 1e-5f) return false;
+    if (std::fabs(with_stop.sample(0.5)[3] - 0.3f) > 1e-5f) return false;
+
+    auto c_neg = g.color_at(-1.0);
+    if (c_neg[0] != 1.0f || c_neg[1] != 0.0f || c_neg[2] != 0.0f || c_neg[3] != 0.8f) return false;
+    auto c_pos = g.color_at(2.0);
+    if (c_pos[0] != 0.0f || c_pos[1] != 0.0f || c_pos[2] != 1.0f || c_pos[3] != 0.4f) return false;
+
+    KeyframeModel::Gradient empty;
+    auto ec = empty.color_at(0.3);
+    auto eo = empty.opacity_at(0.3);
+    if (ec[0] != 1.0f || ec[1] != 1.0f || ec[2] != 1.0f || ec[3] != 1.0f || eo != 1.0f) return false;
+
+    return true;
+}
+
 // =====================================================================
 // Icons tests (after EffectCraft crates/ui-egui/src/icons.rs)
 // =====================================================================
@@ -593,12 +1344,47 @@ void registerAll() {
     add("time::time_range",                                     t_time_range);
     add("time::framerate_from_f64_snaps_to_common",             t_framerate_snap_to_common);
     // Project tests (after EffectCraft crates/project/src/tests.rs)
-    add("project::make_new_defaults",          t_project_make_new);
-    add("project::roundtrip_json",             t_project_roundtrip_json);
-    add("project::comp_resolution_saved",      t_comp_resolution_saved);
-    add("project::all_layer_kinds_roundtrip",  t_layer_kinds_roundtrip);
-    add("project::switches_roundtrip",         t_switches_roundtrip);
-    add("project::transform_roundtrip",        t_transform_roundtrip);
+    add("project::make_new_defaults",                              t_project_make_new);
+    add("project::roundtrip_json",                                 t_project_roundtrip_json);
+    add("project::comp_resolution_saved",                          t_comp_resolution_saved);
+    add("project::all_layer_kinds_roundtrip",                      t_layer_kinds_roundtrip);
+    add("project::switches_roundtrip",                             t_switches_roundtrip);
+    add("project::transform_roundtrip",                            t_transform_roundtrip);
+    add("project::paths_resolve",                                  t_project_paths_resolve);
+    add("project::masks_and_occurrence_paths",                     t_project_masks_and_occurrence_paths);
+    add("project::animate_and_roundtrip_json",                     t_project_animate_and_roundtrip_json);
+    add("project::numbered_names_keep_digits_that_end_a_word",     t_project_numbered_names);
+    add("project::unique_names_and_cycles",                        t_project_unique_names);
+    add("project::same_content_sees_allocated_ids_and_comp_edits", t_project_same_content);
+    // Keyframe tests (after EffectCraft crates/keyframe/src/tests.rs)
+    add("keyframe::missing_spatial_keys_have_no_tangents_or_length",               t_kf_missing_spatial_keys);
+    add("keyframe::time_reverse_handles_deserialized_tick_extremes",               t_kf_time_reverse_extremes);
+    add("keyframe::replacing_key_preserves_spatial_metadata",                      t_kf_replacing_key_preserves_spatial_metadata);
+    add("keyframe::temporal_ease_matches_live_ae_with_overlapping_influences",     t_kf_temporal_ease_matches_live_ae);
+    add("keyframe::maximum_influence_resolves_flat_midpoint_time_curve",           t_kf_maximum_influence);
+    add("keyframe::keyed_orientation_matches_after_effects",                       t_kf_keyed_orientation);
+    add("keyframe::linear_and_hold",                                               t_kf_linear_and_hold);
+    add("keyframe::hold_key_keeps_its_incoming_segment_linear",                    t_kf_hold_key_incoming_linear);
+    add("keyframe::easy_ease_is_symmetric_and_slow_at_ends",                       t_kf_easy_ease);
+    add("keyframe::bezier_with_linear_speed_matches_linear",                       t_kf_bezier_linear_speed);
+    add("keyframe::a_linear_side_next_to_an_eased_side_matches_after_effects",     t_kf_linear_side_next_to_eased);
+    add("keyframe::orientation_linear_side_next_to_an_eased_side_matches_a_scalar", t_kf_orientation_linear_side);
+    add("keyframe::spatial_linear_constant_speed",                                 t_kf_spatial_linear_constant_speed);
+    add("keyframe::spatial_curved_path_has_smooth_constant_speed",                 t_kf_spatial_curved_speed);
+    add("keyframe::spatial_auto_bezier_passes_through_keys",                       t_kf_spatial_auto_bezier_passes);
+    add("keyframe::straight_auto_bezier_path_is_exact",                            t_kf_straight_auto_bezier);
+    add("keyframe::overflowing_or_nan_motion_paths_evaluate",                      t_kf_overflowing_motion_paths);
+    add("keyframe::spatial_auto_bezier_tangents_follow_after_effects",             t_kf_spatial_auto_bezier_tangents);
+    add("keyframe::auto_spatial_holds_between_identical_keys",                     t_kf_auto_spatial_holds);
+    add("keyframe::set_key_replaces_same_time",                                    t_kf_set_key_replaces);
+    add("keyframe::colors_and_paths_interpolate",                                  t_kf_colors_and_paths_interpolate);
+    add("keyframe::roving_keys_get_constant_speed_times",                          t_kf_roving_keys_constant_speed);
+    add("keyframe::roving_keys_never_share_a_time_with_a_fixed_key",              t_kf_roving_keys_never_share_time);
+    add("keyframe::side_ease_reports_linear_and_eased_sides",                      t_kf_side_ease);
+    add("keyframe::time_reverse_mirrors_keys",                                     t_kf_time_reverse_mirrors);
+    add("keyframe::muted_keys_are_skipped_by_evaluation",                          t_kf_muted_keys_skipped);
+    add("keyframe::muted_key_automation_uses_the_active_neighbours",               t_kf_muted_key_automation);
+    add("keyframe::gradient_tracks_sample_separately",                             t_kf_gradient_tracks_sample_separately);
     // Icons tests (after EffectCraft crates/ui-egui/src/icons.rs)
     add("icons::concave_glyphs_are_filled_as_convex_pieces",   t_icons_concave_glyphs_are_filled_as_convex_pieces);
     add("icons::keyframe_bounds_follow_each_half",             t_icons_keyframe_bounds_follow_each_half);

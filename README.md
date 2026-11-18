@@ -34,13 +34,14 @@ creative suite. Named after the Greek god of dreams who takes any shape.
 
 - **The skeleton (phase 1):** the full Atelier window with all seven panels (Project, Composition, Timeline,
   Effect Controls, Tools, Preview, Info), the menu bar, the splash screen, 12 languages and the dark theme.
-- **The project model (phase 2):** compositions with size, frame rate and duration; layers (solid, shape, text,
-  image, footage, nested composition, null, camera, light) each with a transform (anchor, position, scale, rotation,
-  opacity) and in/out points. Saved and opened as `.morpheus` JSON.
+- **The project model (phase 2):** compositions with size, frame rate and duration; exact integer media time
+  (254,016,000,000 ticks/sec); layers (solid, shape, text, image, footage, nested composition, null, camera, light);
+  full property tree with properties, groups, parameter UI, masks, and keyframe base (values, temporal/spatial
+  interpolation, auto-Bezier, roving, time reverse). Saved and opened as `.morpheus` JSON.
 
 ## Coming next
 
-Rendering a frame (phase 3), the Timeline with scrubbing and playback (phase 4), keyframes and the graph editor
+Rendering a frame (phase 3), the Timeline with scrubbing and playback (phase 4), keyframe UI and the graph editor
 (phase 5), shapes and text (phase 6), effects (phase 7), masks and mattes (phase 8), footage in and the render queue
 (phase 9), expressions and 3D cameras (phase 10).
 
@@ -73,8 +74,13 @@ The code, in `src/`:
 - `app.cpp`: project management, menu actions, the scripted test hooks
 - `panels.cpp`: the seven panels in the Atelier layout and look
 - `project.cpp`: the project model; JSON save and load
+- `time_.cpp`: exact integer media time arithmetic and timecode conversions
+- `keyframe.cpp`: values, keyframing, temporal/spatial easing, orientation slerp
+- `props.cpp`: hierarchical property tree, path resolution, and parameter descriptors
+- `icons.cpp`: vector icons rendered in code on a 16x16 grid
 - `splash.cpp`: the splash shown while loading and in Help > About
 - `lang.cpp`: the 12 language packs (Language menu)
+- `selftest.cpp`: automated self-test runner (all ported unit tests)
 
 ## Credits
 

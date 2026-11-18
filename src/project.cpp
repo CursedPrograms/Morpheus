@@ -83,6 +83,321 @@ static std::string jsonDouble(double v) {
 }
 
 // =====================================================================
+// Property Tree JSON Serialization (after EffectCraft crates/project/src/props.rs)
+// =====================================================================
+
+static std::string valueToJson(const KeyframeModel::Value& v) {
+    std::string o = "{\"t\":";
+    switch (v.kind) {
+    case KeyframeModel::ValueKind::Scalar:
+        o += "\"Scalar\",\"v\":" + jsonDouble(v.scalar) + "}";
+        break;
+    case KeyframeModel::ValueKind::Vec2:
+        o += "\"Vec2\",\"v\":[" + jsonDouble(v.v2[0]) + "," + jsonDouble(v.v2[1]) + "]}";
+        break;
+    case KeyframeModel::ValueKind::Vec3:
+        o += "\"Vec3\",\"v\":[" + jsonDouble(v.v3[0]) + "," + jsonDouble(v.v3[1]) + "," + jsonDouble(v.v3[2]) + "]}";
+        break;
+    case KeyframeModel::ValueKind::Color:
+        o += "\"Color\",\"v\":[" + jsonDouble(v.color[0]) + "," + jsonDouble(v.color[1]) + "," + jsonDouble(v.color[2]) + "," + jsonDouble(v.color[3]) + "]}";
+        break;
+    case KeyframeModel::ValueKind::Bool:
+        o += std::string("\"Bool\",\"v\":") + (v.b ? "true}" : "false}");
+        break;
+    case KeyframeModel::ValueKind::Enum:
+        o += "\"Enum\",\"v\":" + std::to_string(v.e) + "}";
+        break;
+    case KeyframeModel::ValueKind::Str:
+        o += "\"Str\",\"v\":" + jsonStr(v.str) + "}";
+        break;
+    case KeyframeModel::ValueKind::Layer:
+        o += "\"Layer\",\"v\":" + (v.layer == 0 ? "null}" : std::to_string(v.layer) + "}");
+        break;
+    case KeyframeModel::ValueKind::Path: {
+        o += "\"Path\",\"v\":{";
+        o += "\"closed\":" + std::string(v.path.closed ? "true" : "false") + ",";
+        o += "\"vertices\":[";
+        for (size_t i = 0; i < v.path.vertices.size(); ++i) {
+            if (i > 0) o += ",";
+            o += "[" + jsonDouble(v.path.vertices[i][0]) + "," + jsonDouble(v.path.vertices[i][1]) + "]";
+        }
+        o += "],\"in_tangents\":[";
+        for (size_t i = 0; i < v.path.in_tangents.size(); ++i) {
+            if (i > 0) o += ",";
+            o += "[" + jsonDouble(v.path.in_tangents[i][0]) + "," + jsonDouble(v.path.in_tangents[i][1]) + "]";
+        }
+        o += "],\"out_tangents\":[";
+        for (size_t i = 0; i < v.path.out_tangents.size(); ++i) {
+            if (i > 0) o += ",";
+            o += "[" + jsonDouble(v.path.out_tangents[i][0]) + "," + jsonDouble(v.path.out_tangents[i][1]) + "]";
+        }
+        o += "],\"feather\":[";
+        for (size_t i = 0; i < v.path.feather.size(); ++i) {
+            if (i > 0) o += ",";
+            const auto& f = v.path.feather[i];
+            o += "{\"segment\":" + std::to_string(f.segment) + ",\"t\":" + jsonDouble(f.t) + ",\"radius\":" + jsonDouble(f.radius) + ",\"tension\":" + jsonDouble(f.tension) + "}";
+        }
+        o += "]}}";
+        break;
+    }
+    case KeyframeModel::ValueKind::Gradient: {
+        o += "\"Gradient\",\"v\":{\"colors\":[";
+        for (size_t i = 0; i < v.grad.colors.size(); ++i) {
+            if (i > 0) o += ",";
+            const auto& c = v.grad.colors[i];
+            o += "[" + jsonDouble(c.first) + ",[" + jsonDouble(c.second[0]) + "," + jsonDouble(c.second[1]) + "," + jsonDouble(c.second[2]) + "," + jsonDouble(c.second[3]) + "]]";
+        }
+        o += "],\"opacities\":[";
+        for (size_t i = 0; i < v.grad.opacities.size(); ++i) {
+            if (i > 0) o += ",";
+            const auto& op = v.grad.opacities[i];
+            o += "[" + jsonDouble(op.first) + "," + jsonDouble(op.second) + "]";
+        }
+        o += "]}}";
+        break;
+    }
+    }
+    return o;
+}
+
+static std::string keyframeToJson(const KeyframeModel::Keyframe& k) {
+    std::string o = "{";
+    o += "\"time\":" + std::to_string(k.time.v) + ",";
+    o += "\"value\":" + valueToJson(k.value) + ",";
+    o += "\"in_interp\":" + jsonStr(KeyframeModel::interp_label(k.in_interp)) + ",";
+    o += "\"out_interp\":" + jsonStr(KeyframeModel::interp_label(k.out_interp)) + ",";
+    o += "\"continuous\":" + std::string(k.continuous ? "true" : "false") + ",";
+    o += "\"auto_bezier\":" + std::string(k.auto_bezier ? "true" : "false") + ",";
+    o += "\"spatial_in\":[" + jsonDouble(k.spatial_in[0]) + "," + jsonDouble(k.spatial_in[1]) + "," + jsonDouble(k.spatial_in[2]) + "],";
+    o += "\"spatial_out\":[" + jsonDouble(k.spatial_out[0]) + "," + jsonDouble(k.spatial_out[1]) + "," + jsonDouble(k.spatial_out[2]) + "],";
+    o += "\"spatial_auto\":" + std::string(k.spatial_auto ? "true" : "false") + ",";
+    o += "\"spatial_continuous\":" + std::string(k.spatial_continuous ? "true" : "false") + ",";
+    o += "\"roving\":" + std::string(k.roving ? "true" : "false") + ",";
+    o += "\"label\":" + std::to_string(k.label) + ",";
+    o += "\"muted\":" + std::string(k.muted ? "true" : "false") + ",";
+    o += "\"in_ease\":[";
+    for (size_t i = 0; i < k.in_ease.size(); ++i) {
+        if (i > 0) o += ",";
+        o += "{\"speed\":" + jsonDouble(k.in_ease[i].speed) + ",\"influence\":" + jsonDouble(k.in_ease[i].influence) + "}";
+    }
+    o += "],\"out_ease\":[";
+    for (size_t i = 0; i < k.out_ease.size(); ++i) {
+        if (i > 0) o += ",";
+        o += "{\"speed\":" + jsonDouble(k.out_ease[i].speed) + ",\"influence\":" + jsonDouble(k.out_ease[i].influence) + "}";
+    }
+    o += "]}";
+    return o;
+}
+
+static std::string propertyToJson(const Props::Property& p) {
+    std::string o = "{";
+    o += "\"uid\":" + std::to_string(p.uid) + ",";
+    o += "\"match\":" + jsonStr(p.match_id) + ",";
+    o += "\"name\":" + jsonStr(p.name) + ",";
+    o += "\"value\":" + valueToJson(p.value) + ",";
+    o += "\"spatial\":" + std::string(p.spatial ? "true" : "false") + ",";
+    o += "\"hold_only\":" + std::string(p.hold_only ? "true" : "false") + ",";
+    o += "\"three_d_only\":" + std::string(p.three_d_only ? "true" : "false") + ",";
+    o += "\"two_d_only\":" + std::string(p.two_d_only ? "true" : "false") + ",";
+    o += "\"shown_dims\":" + std::to_string((int)p.shown_dims) + ",";
+    o += "\"static_only\":" + std::string(p.static_only ? "true" : "false") + ",";
+    if (p.expr.has_value()) {
+        o += "\"expr\":{\"text\":" + jsonStr(p.expr->text) + ",\"enabled\":" + (p.expr->enabled ? "true" : "false") + "},";
+    }
+    o += "\"keys\":[";
+    for (size_t i = 0; i < p.keys.size(); ++i) {
+        if (i > 0) o += ",";
+        o += keyframeToJson(p.keys[i]);
+    }
+    o += "]}";
+    return o;
+}
+
+static std::string propGroupToJson(const Props::PropGroup& g);
+
+static std::string nodeToJson(const Props::Node& n) {
+    if (const auto* p = n.as_prop()) {
+        std::string o = "{\"node\":\"Prop\",";
+        std::string pstr = propertyToJson(*p);
+        o += pstr.substr(1);
+        return o;
+    } else if (const auto* g = n.as_group()) {
+        std::string o = "{\"node\":\"Group\",";
+        std::string gstr = propGroupToJson(*g);
+        o += gstr.substr(1);
+        return o;
+    }
+    return "{}";
+}
+
+static std::string propGroupToJson(const Props::PropGroup& g) {
+    std::string o = "{";
+    o += "\"uid\":" + std::to_string(g.uid) + ",";
+    o += "\"match\":" + jsonStr(g.match_id) + ",";
+    o += "\"name\":" + jsonStr(g.name) + ",";
+    o += "\"enabled\":" + std::string(g.enabled ? "true" : "false") + ",";
+    o += "\"label\":" + std::to_string((int)g.label) + ",";
+    o += "\"kind\":{\"tag\":" + std::to_string((int)g.kind.tag);
+    if (g.kind.tag == Props::GroupKindTag::Mask) {
+        o += ",\"mask_mode\":" + std::to_string((int)g.kind.mask_mode);
+        o += ",\"mask_inverted\":" + std::string(g.kind.mask_inverted ? "true" : "false");
+        o += ",\"mask_color\":[" + std::to_string((int)g.kind.mask_color[0]) + "," +
+             std::to_string((int)g.kind.mask_color[1]) + "," +
+             std::to_string((int)g.kind.mask_color[2]) + "]";
+    } else if (g.kind.tag == Props::GroupKindTag::Effect) {
+        o += ",\"effect\":" + jsonStr(g.kind.effect_id);
+    }
+    o += "},";
+    o += "\"children\":[";
+    for (size_t i = 0; i < g.children.size(); ++i) {
+        if (i > 0) o += ",";
+        o += nodeToJson(g.children[i]);
+    }
+    o += "]}";
+    return o;
+}
+
+// =====================================================================
+// Layer helpers  (after EffectCraft crates/project/src/layer.rs, build.rs)
+// =====================================================================
+
+void Layer::initProps(uint64_t* counter, double anchorX, double anchorY, double posX, double posY) {
+    Props::Ids ids(counter);
+    props = ids.group("layer", name);
+    props.with(Props::Build::masks(ids));
+    props.with(Props::Build::effects(ids));
+    props.with(Props::Build::transform(ids, {anchorX, anchorY}, {posX, posY}));
+    syncPropsToTransform();
+}
+
+void Layer::syncPropsToTransform() {
+    if (const auto* a = props.prop("transform/anchor")) {
+        auto v = a->value.as_vec3();
+        xform.anchorX = (float)v[0];
+        xform.anchorY = (float)v[1];
+    }
+    if (const auto* p = props.prop("transform/position")) {
+        auto v = p->value.as_vec3();
+        xform.posX = (float)v[0];
+        xform.posY = (float)v[1];
+    }
+    if (const auto* s = props.prop("transform/scale")) {
+        auto v = s->value.as_vec3();
+        xform.scaleX = (float)v[0];
+        xform.scaleY = (float)v[1];
+    }
+    if (const auto* r = props.prop("transform/rotation")) {
+        xform.rotation = (float)r->value.as_f64();
+    }
+    if (const auto* op = props.prop("transform/opacity")) {
+        xform.opacity = (float)op->value.as_f64();
+    }
+}
+
+void Layer::syncTransformToProps() {
+    if (auto* a = props.prop_mut("transform/anchor")) {
+        if (!a->is_animated()) a->value = KeyframeModel::Value::Vec3(xform.anchorX, xform.anchorY, 0.0);
+    }
+    if (auto* p = props.prop_mut("transform/position")) {
+        if (!p->is_animated()) p->value = KeyframeModel::Value::Vec3(xform.posX, xform.posY, 0.0);
+    }
+    if (auto* s = props.prop_mut("transform/scale")) {
+        if (!s->is_animated()) s->value = KeyframeModel::Value::Vec3(xform.scaleX, xform.scaleY, 100.0);
+    }
+    if (auto* r = props.prop_mut("transform/rotation")) {
+        if (!r->is_animated()) r->value = KeyframeModel::Value::Scalar(xform.rotation);
+    }
+    if (auto* op = props.prop_mut("transform/opacity")) {
+        if (!op->is_animated()) op->value = KeyframeModel::Value::Scalar(xform.opacity);
+    }
+}
+
+bool Layer::operator==(const Layer& o) const {
+    return id == o.id && name == o.name && kind == o.kind && label == o.label &&
+           comment == o.comment && sourceItem == o.sourceItem &&
+           lightKind == o.lightKind && primitiveKind == o.primitiveKind &&
+           inPt == o.inPt && outPt == o.outPt && startTime == o.startTime &&
+           stretch == o.stretch && solidR == o.solidR && solidG == o.solidG &&
+           solidB == o.solidB && solidA == o.solidA &&
+           switches.video == o.switches.video && switches.audio == o.switches.audio &&
+           switches.solo == o.switches.solo && switches.locked == o.switches.locked &&
+           switches.shy == o.switches.shy && switches.collapse == o.switches.collapse &&
+           switches.effects == o.switches.effects && switches.frameBlend == o.switches.frameBlend &&
+           switches.motionBlur == o.switches.motionBlur && switches.adjustment == o.switches.adjustment &&
+           switches.threeD == o.switches.threeD &&
+           props == o.props;
+}
+
+// =====================================================================
+// Composition & Name Stem Helpers (after EffectCraft crates/project/src/comp.rs, item.rs)
+// =====================================================================
+
+std::string name_stem(const std::string& base) {
+    size_t i = base.size();
+    while (i > 0 && std::isdigit((unsigned char)base[i - 1])) --i;
+    std::string head = base.substr(0, i);
+    if (i < base.size() && !head.empty() && head.back() == ' ') {
+        std::string stem = head.substr(0, head.size() - 1);
+        while (!stem.empty() && stem.back() == ' ') stem.pop_back();
+        if (!stem.empty()) return stem;
+    }
+    std::string trimmed = base;
+    while (!trimmed.empty() && trimmed.back() == ' ') trimmed.pop_back();
+    return trimmed;
+}
+
+std::string Composition::uniqueLayerName(const std::string& base) const {
+    bool exists = false;
+    for (const auto& l : layers) {
+        if (l.name == base) { exists = true; break; }
+    }
+    if (!exists) return base;
+
+    std::string stem = name_stem(base);
+    std::vector<uint64_t> taken;
+    for (const auto& l : layers) {
+        if (l.name.size() > stem.size() + 1 && l.name.compare(0, stem.size(), stem) == 0 && l.name[stem.size()] == ' ') {
+            std::string num_str = l.name.substr(stem.size() + 1);
+            bool all_digits = !num_str.empty();
+            for (char c : num_str) {
+                if (!std::isdigit((unsigned char)c)) { all_digits = false; break; }
+            }
+            if (all_digits) {
+                try {
+                    uint64_t n = std::stoull(num_str);
+                    if (std::to_string(n) == num_str) taken.push_back(n);
+                } catch (...) {}
+            }
+        }
+    }
+    for (uint64_t cand = 2; ; ++cand) {
+        if (std::find(taken.begin(), taken.end(), cand) == taken.end()) {
+            return stem + " " + std::to_string(cand);
+        }
+    }
+}
+
+bool Composition::operator==(const Composition& o) const {
+    return name == o.name && width == o.width && height == o.height &&
+           pixelAspect == o.pixelAspect && frameRate == o.frameRate &&
+           duration == o.duration && displayStart == o.displayStart &&
+           workAreaStart == o.workAreaStart && workAreaDur == o.workAreaDur &&
+           resolution == o.resolution && layers == o.layers;
+}
+
+std::string ProjectData::numberedItemName(const std::string& base, std::function<bool(const std::string&)> in_use) const {
+    std::string stem = name_stem(base);
+    for (uint64_t cand = 2; ; ++cand) {
+        std::string cand_name = stem + " " + std::to_string(cand);
+        if (!in_use(cand_name)) return cand_name;
+    }
+}
+
+bool ProjectData::operator==(const ProjectData& o) const {
+    return name == o.name && nextId == o.nextId && compositions == o.compositions;
+}
+
+// =====================================================================
 // Project save (after EffectCraft Project::to_file_json)
 // =====================================================================
 // Schema: {"schema":1,"name":"...","compositions":[...],"nextId":N}
@@ -128,9 +443,10 @@ static std::string layerToJson(const Layer& l) {
     o += sw;
     // Solid colour
     char sc[128];
-    snprintf(sc, sizeof sc, "\"solidRGBA\":[%g,%g,%g,%g]",
+    snprintf(sc, sizeof sc, "\"solidRGBA\":[%g,%g,%g,%g],",
              l.solidR, l.solidG, l.solidB, l.solidA);
     o += sc;
+    o += "\"props\":" + propGroupToJson(l.props);
     o += "}";
     return o;
 }
@@ -172,18 +488,22 @@ static std::string compToJson(const Composition& c) {
     return o;
 }
 
-bool save(Project& proj, const std::string& path) {
+std::string ProjectData::toJson() const {
     std::string o = "{";
     o += "\"schema\":1,";
-    o += "\"name\":" + jsonStr(proj.name) + ",";
-    o += "\"nextId\":" + std::to_string(proj.nextId) + ",";
+    o += "\"name\":" + jsonStr(name) + ",";
+    o += "\"nextId\":" + std::to_string(nextId) + ",";
     o += "\"compositions\":[";
-    for (size_t i = 0; i < proj.compositions.size(); ++i) {
+    for (size_t i = 0; i < compositions.size(); ++i) {
         if (i > 0) o += ",";
-        o += compToJson(proj.compositions[i]);
+        o += compToJson(compositions[i]);
     }
     o += "]}";
+    return o;
+}
 
+bool save(Project& proj, const std::string& path) {
+    std::string o = proj.toJson();
     FILE* f = fopen(path.c_str(), "wb");
     if (!f) return false;
     fwrite(o.data(), 1, o.size(), f);
@@ -357,10 +677,377 @@ struct Parser {
 };
 
 // =====================================================================
+// Property Tree JSON Deserialization (after EffectCraft crates/project/src/props.rs)
+// =====================================================================
+
+static bool parseValue(Parser& jp, KeyframeModel::Value& v) {
+    std::string tag;
+    return jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "t") return jp.parseString(tag);
+        if (key == "v") {
+            if (tag == "Scalar") {
+                double val = 0.0;
+                if (!jp.parseDouble(val)) return false;
+                v = KeyframeModel::Value::Scalar(val);
+                return true;
+            }
+            if (tag == "Vec2") {
+                std::vector<double> vals;
+                bool ok = jp.parseArray([&]() -> bool {
+                    double d; if (!jp.parseDouble(d)) return false;
+                    vals.push_back(d); return true;
+                });
+                if (!ok) return false;
+                v = KeyframeModel::Value::Vec2(vals.size() > 0 ? vals[0] : 0.0, vals.size() > 1 ? vals[1] : 0.0);
+                return true;
+            }
+            if (tag == "Vec3") {
+                std::vector<double> vals;
+                bool ok = jp.parseArray([&]() -> bool {
+                    double d; if (!jp.parseDouble(d)) return false;
+                    vals.push_back(d); return true;
+                });
+                if (!ok) return false;
+                v = KeyframeModel::Value::Vec3(vals.size() > 0 ? vals[0] : 0.0, vals.size() > 1 ? vals[1] : 0.0, vals.size() > 2 ? vals[2] : 0.0);
+                return true;
+            }
+            if (tag == "Color") {
+                std::vector<double> vals;
+                bool ok = jp.parseArray([&]() -> bool {
+                    double d; if (!jp.parseDouble(d)) return false;
+                    vals.push_back(d); return true;
+                });
+                if (!ok) return false;
+                v = KeyframeModel::Value::Color(vals.size() > 0 ? vals[0] : 0.0, vals.size() > 1 ? vals[1] : 0.0, vals.size() > 2 ? vals[2] : 0.0, vals.size() > 3 ? vals[3] : 1.0);
+                return true;
+            }
+            if (tag == "Bool") {
+                bool b = false;
+                if (!jp.parseBool(b)) return false;
+                v = KeyframeModel::Value::Bool(b);
+                return true;
+            }
+            if (tag == "Enum") {
+                int64_t e = 0;
+                if (!jp.parseInt64(e)) return false;
+                v = KeyframeModel::Value::Enum((uint32_t)e);
+                return true;
+            }
+            if (tag == "Str") {
+                std::string s;
+                if (!jp.parseString(s)) return false;
+                v = KeyframeModel::Value::Str(s);
+                return true;
+            }
+            if (tag == "Layer") {
+                uint64_t lay = 0;
+                if (!jp.parseUint64(lay)) lay = 0;
+                v = KeyframeModel::Value::Layer(lay);
+                return true;
+            }
+            if (tag == "Path") {
+                KeyframeModel::ShapePath sp;
+                bool ok = jp.parseObject([&](const std::string& pk) -> bool {
+                    if (pk == "closed") return jp.parseBool(sp.closed);
+                    if (pk == "vertices") {
+                        return jp.parseArray([&]() -> bool {
+                            std::vector<double> pt;
+                            if (!jp.parseArray([&]() -> bool {
+                                double d; if (!jp.parseDouble(d)) return false;
+                                pt.push_back(d); return true;
+                            })) return false;
+                            sp.vertices.push_back({pt.size() > 0 ? pt[0] : 0.0, pt.size() > 1 ? pt[1] : 0.0});
+                            return true;
+                        });
+                    }
+                    if (pk == "in_tangents") {
+                        return jp.parseArray([&]() -> bool {
+                            std::vector<double> pt;
+                            if (!jp.parseArray([&]() -> bool {
+                                double d; if (!jp.parseDouble(d)) return false;
+                                pt.push_back(d); return true;
+                            })) return false;
+                            sp.in_tangents.push_back({pt.size() > 0 ? pt[0] : 0.0, pt.size() > 1 ? pt[1] : 0.0});
+                            return true;
+                        });
+                    }
+                    if (pk == "out_tangents") {
+                        return jp.parseArray([&]() -> bool {
+                            std::vector<double> pt;
+                            if (!jp.parseArray([&]() -> bool {
+                                double d; if (!jp.parseDouble(d)) return false;
+                                pt.push_back(d); return true;
+                            })) return false;
+                            sp.out_tangents.push_back({pt.size() > 0 ? pt[0] : 0.0, pt.size() > 1 ? pt[1] : 0.0});
+                            return true;
+                        });
+                    }
+                    if (pk == "feather") {
+                        return jp.parseArray([&]() -> bool {
+                            KeyframeModel::FeatherPoint fp;
+                            bool fok = jp.parseObject([&](const std::string& fk) -> bool {
+                                if (fk == "segment") { int64_t seg; if (!jp.parseInt64(seg)) return false; fp.segment = (size_t)seg; return true; }
+                                if (fk == "t") return jp.parseDouble(fp.t);
+                                if (fk == "radius") return jp.parseDouble(fp.radius);
+                                if (fk == "tension") return jp.parseDouble(fp.tension);
+                                return false;
+                            });
+                            if (!fok) return false;
+                            sp.feather.push_back(fp);
+                            return true;
+                        });
+                    }
+                    return false;
+                });
+                if (!ok) return false;
+                v = KeyframeModel::Value::Path(sp);
+                return true;
+            }
+            if (tag == "Gradient") {
+                KeyframeModel::Gradient g;
+                bool ok = jp.parseObject([&](const std::string& gk) -> bool {
+                    if (gk == "colors") {
+                        return jp.parseArray([&]() -> bool {
+                            double pos = 0.0;
+                            std::vector<double> rgba;
+                            int elem = 0;
+                            bool aok = jp.parseArray([&]() -> bool {
+                                if (elem == 0) {
+                                    if (!jp.parseDouble(pos)) return false;
+                                } else {
+                                    if (!jp.parseArray([&]() -> bool {
+                                        double d; if (!jp.parseDouble(d)) return false;
+                                        rgba.push_back(d); return true;
+                                    })) return false;
+                                }
+                                ++elem; return true;
+                            });
+                            if (!aok) return false;
+                            g.colors.push_back({pos, {
+                                (float)(rgba.size() > 0 ? rgba[0] : 0.0),
+                                (float)(rgba.size() > 1 ? rgba[1] : 0.0),
+                                (float)(rgba.size() > 2 ? rgba[2] : 0.0),
+                                (float)(rgba.size() > 3 ? rgba[3] : 1.0)
+                            }});
+                            return true;
+                        });
+                    }
+                    if (gk == "opacities") {
+                        return jp.parseArray([&]() -> bool {
+                            double pos = 0.0, alpha = 1.0;
+                            int elem = 0;
+                            bool aok = jp.parseArray([&]() -> bool {
+                                if (elem == 0) {
+                                    if (!jp.parseDouble(pos)) return false;
+                                } else {
+                                    if (!jp.parseDouble(alpha)) return false;
+                                }
+                                ++elem; return true;
+                            });
+                            if (!aok) return false;
+                            g.opacities.push_back({pos, (float)alpha});
+                            return true;
+                        });
+                    }
+                    return false;
+                });
+                if (!ok) return false;
+                v = KeyframeModel::Value::Grad(g);
+                return true;
+            }
+        }
+        return false;
+    });
+}
+
+static bool parseKeyframe(Parser& jp, KeyframeModel::Keyframe& k) {
+    return jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "time") {
+            int64_t t; if (!jp.parseInt64(t)) return false;
+            k.time = Tick(t); return true;
+        }
+        if (key == "value") {
+            return parseValue(jp, k.value);
+        }
+        if (key == "in_interp") {
+            std::string s; if (!jp.parseString(s)) return false;
+            if (s == "Bezier") k.in_interp = KeyframeModel::Interp::Bezier;
+            else if (s == "Hold") k.in_interp = KeyframeModel::Interp::Hold;
+            else k.in_interp = KeyframeModel::Interp::Linear;
+            return true;
+        }
+        if (key == "out_interp") {
+            std::string s; if (!jp.parseString(s)) return false;
+            if (s == "Bezier") k.out_interp = KeyframeModel::Interp::Bezier;
+            else if (s == "Hold") k.out_interp = KeyframeModel::Interp::Hold;
+            else k.out_interp = KeyframeModel::Interp::Linear;
+            return true;
+        }
+        if (key == "continuous") return jp.parseBool(k.continuous);
+        if (key == "auto_bezier") return jp.parseBool(k.auto_bezier);
+        if (key == "spatial_in") {
+            int i = 0;
+            return jp.parseArray([&]() -> bool {
+                double d; if (!jp.parseDouble(d)) return false;
+                if (i < 3) k.spatial_in[i] = d;
+                ++i; return true;
+            });
+        }
+        if (key == "spatial_out") {
+            int i = 0;
+            return jp.parseArray([&]() -> bool {
+                double d; if (!jp.parseDouble(d)) return false;
+                if (i < 3) k.spatial_out[i] = d;
+                ++i; return true;
+            });
+        }
+        if (key == "spatial_auto") return jp.parseBool(k.spatial_auto);
+        if (key == "spatial_continuous") return jp.parseBool(k.spatial_continuous);
+        if (key == "roving") return jp.parseBool(k.roving);
+        if (key == "label") {
+            int64_t l; if (!jp.parseInt64(l)) return false;
+            k.label = (uint8_t)l; return true;
+        }
+        if (key == "muted") return jp.parseBool(k.muted);
+        if (key == "in_ease") {
+            return jp.parseArray([&]() -> bool {
+                KeyframeModel::Ease e;
+                bool ok = jp.parseObject([&](const std::string& ek) -> bool {
+                    if (ek == "speed") return jp.parseDouble(e.speed);
+                    if (ek == "influence") return jp.parseDouble(e.influence);
+                    return false;
+                });
+                if (!ok) return false;
+                k.in_ease.push_back(e); return true;
+            });
+        }
+        if (key == "out_ease") {
+            return jp.parseArray([&]() -> bool {
+                KeyframeModel::Ease e;
+                bool ok = jp.parseObject([&](const std::string& ek) -> bool {
+                    if (ek == "speed") return jp.parseDouble(e.speed);
+                    if (ek == "influence") return jp.parseDouble(e.influence);
+                    return false;
+                });
+                if (!ok) return false;
+                k.out_ease.push_back(e); return true;
+            });
+        }
+        return false;
+    });
+}
+
+static bool parseProperty(Parser& jp, Props::Property& p) {
+    return jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "uid") return jp.parseUint64(p.uid);
+        if (key == "match") return jp.parseString(p.match_id);
+        if (key == "name") return jp.parseString(p.name);
+        if (key == "value") return parseValue(jp, p.value);
+        if (key == "spatial") return jp.parseBool(p.spatial);
+        if (key == "hold_only") return jp.parseBool(p.hold_only);
+        if (key == "three_d_only") return jp.parseBool(p.three_d_only);
+        if (key == "two_d_only") return jp.parseBool(p.two_d_only);
+        if (key == "shown_dims") {
+            int64_t d; if (!jp.parseInt64(d)) return false;
+            p.shown_dims = (uint8_t)d; return true;
+        }
+        if (key == "static_only") return jp.parseBool(p.static_only);
+        if (key == "expr") {
+            Props::Expression ex;
+            bool ok = jp.parseObject([&](const std::string& ek) -> bool {
+                if (ek == "text") return jp.parseString(ex.text);
+                if (ek == "enabled") return jp.parseBool(ex.enabled);
+                return false;
+            });
+            if (ok) p.expr = ex;
+            return ok;
+        }
+        if (key == "keys") {
+            return jp.parseArray([&]() -> bool {
+                KeyframeModel::Keyframe k;
+                if (!parseKeyframe(jp, k)) return false;
+                p.keys.push_back(k); return true;
+            });
+        }
+        return false;
+    });
+}
+
+static bool parseNode(Parser& jp, Props::Node& n);
+
+static bool parsePropGroup(Parser& jp, Props::PropGroup& g) {
+    return jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "uid") return jp.parseUint64(g.uid);
+        if (key == "match") return jp.parseString(g.match_id);
+        if (key == "name") return jp.parseString(g.name);
+        if (key == "enabled") return jp.parseBool(g.enabled);
+        if (key == "label") {
+            int64_t l; if (!jp.parseInt64(l)) return false;
+            g.label = (uint8_t)l; return true;
+        }
+        if (key == "kind") {
+            return jp.parseObject([&](const std::string& kk) -> bool {
+                if (kk == "tag") {
+                    int64_t t; if (!jp.parseInt64(t)) return false;
+                    g.kind.tag = (Props::GroupKindTag)t; return true;
+                }
+                if (kk == "mask_mode") {
+                    int64_t m; if (!jp.parseInt64(m)) return false;
+                    g.kind.mask_mode = (Props::MaskMode)m; return true;
+                }
+                if (kk == "mask_inverted") return jp.parseBool(g.kind.mask_inverted);
+                if (kk == "mask_color") {
+                    int i = 0;
+                    return jp.parseArray([&]() -> bool {
+                        int64_t c; if (!jp.parseInt64(c)) return false;
+                        if (i < 3) g.kind.mask_color[i] = (uint8_t)c;
+                        ++i; return true;
+                    });
+                }
+                if (kk == "effect") return jp.parseString(g.kind.effect_id);
+                return false;
+            });
+        }
+        if (key == "children") {
+            return jp.parseArray([&]() -> bool {
+                Props::Node n;
+                if (!parseNode(jp, n)) return false;
+                g.children.push_back(std::move(n));
+                return true;
+            });
+        }
+        return false;
+    });
+}
+
+static bool parseNode(Parser& jp, Props::Node& n) {
+    const char* start_pos = jp.p;
+    std::string node_type;
+    bool ok = jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "node") return jp.parseString(node_type);
+        return false;
+    });
+    if (!ok) return false;
+    jp.p = start_pos;
+    if (node_type == "Group") {
+        Props::PropGroup g;
+        if (!parsePropGroup(jp, g)) return false;
+        n = Props::Node(std::move(g));
+        return true;
+    } else {
+        Props::Property p;
+        if (!parseProperty(jp, p)) return false;
+        n = Props::Node(std::move(p));
+        return true;
+    }
+}
+
+// =====================================================================
 // Parse a Layer from JSON
 // =====================================================================
 static bool parseLayer(Parser& jp, Layer& l) {
-    return jp.parseObject([&](const std::string& key) -> bool {
+    bool hasProps = false;
+    bool ok = jp.parseObject([&](const std::string& key) -> bool {
         if (key == "id") {
             uint64_t v; if (!jp.parseUint64(v)) return false;
             l.id.v = v; return true;
@@ -443,8 +1130,20 @@ static bool parseLayer(Parser& jp, Layer& l) {
                 ++i; return true;
             });
         }
+        if (key == "props") {
+            hasProps = true;
+            return parsePropGroup(jp, l.props);
+        }
         return false; // unknown key → skip
     });
+    if (!ok) return false;
+    if (hasProps) {
+        l.syncPropsToTransform();
+    } else {
+        uint64_t dummy = 1000;
+        l.initProps(&dummy, l.xform.anchorX, l.xform.anchorY, l.xform.posX, l.xform.posY);
+    }
+    return true;
 }
 
 // =====================================================================
@@ -544,20 +1243,10 @@ static bool parseComp(Parser& jp, Composition& c) {
 }
 
 // =====================================================================
-// Project load  (after EffectCraft Project::from_json_repaired)
+// Project fromJson & load  (after EffectCraft Project::from_json_repaired)
 // =====================================================================
-bool load(Project& proj, const std::string& path) {
-    FILE* f = fopen(path.c_str(), "rb");
-    if (!f) return false;
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    rewind(f);
-    if (sz <= 0 || sz > 64 * 1024 * 1024) { fclose(f); return false; }
-    std::string src((size_t)sz, '\0');
-    if ((long)fread(src.data(), 1, (size_t)sz, f) != sz) { fclose(f); return false; }
-    fclose(f);
-
-    Parser jp(src.c_str(), src.size());
+bool ProjectData::fromJson(ProjectData& proj, const std::string& json) {
+    Parser jp(json.c_str(), json.size());
     ProjectData tmp;
     bool ok = jp.parseObject([&](const std::string& key) -> bool {
         if (key == "name") return jp.parseString(tmp.name);
@@ -574,7 +1263,6 @@ bool load(Project& proj, const std::string& path) {
             });
         }
         if (key == "schema" || key == "savedBy") {
-            // skip scalar
             return false;
         }
         return false;
@@ -583,9 +1271,13 @@ bool load(Project& proj, const std::string& path) {
 
     // Fix nextId to be greater than all ids in the project
     // after EffectCraft Project::fix_next_id
-    for (const auto& c : tmp.compositions)
-        for (const auto& l : c.layers)
+    for (const auto& c : tmp.compositions) {
+        for (const auto& l : c.layers) {
             if (l.id.v + 1 > tmp.nextId) tmp.nextId = l.id.v + 1;
+            uint64_t max_p = l.props.max_uid();
+            if (max_p + 1 > tmp.nextId) tmp.nextId = max_p + 1;
+        }
+    }
 
     // Sanitize comps: if duration is 0, set a default
     for (auto& c : tmp.compositions) {
@@ -596,10 +1288,25 @@ bool load(Project& proj, const std::string& path) {
         if (c.height < 1 || c.height > 65535) c.height = 1080;
     }
 
-    tmp.path  = path;
-    tmp.dirty = false;
     if (!tmp.compositions.empty()) tmp.activeComp = 0;
     proj = tmp;
+    return true;
+}
+
+bool load(Project& proj, const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    rewind(f);
+    if (sz <= 0 || sz > 64 * 1024 * 1024) { fclose(f); return false; }
+    std::string src((size_t)sz, '\0');
+    if ((long)fread(src.data(), 1, (size_t)sz, f) != sz) { fclose(f); return false; }
+    fclose(f);
+
+    if (!ProjectData::fromJson(proj, src)) return false;
+    proj.path  = path;
+    proj.dirty = false;
     return true;
 }
 

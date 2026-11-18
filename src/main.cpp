@@ -17,6 +17,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <io.h>
+#include <fcntl.h>
 #endif
 
 #include <SDL.h>
@@ -107,13 +109,34 @@ static void splashSay(const char* status, float progress) {
 
 int main(int argc, char** argv) {
 #ifdef _WIN32
+    AttachConsole(ATTACH_PARENT_PROCESS);
     HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
-    if (!hOut || hOut == INVALID_HANDLE_VALUE) {
-        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
-            FILE* fp = nullptr;
-            freopen_s(&fp, "CONOUT$", "w", stdout);
-            freopen_s(&fp, "CONOUT$", "w", stderr);
+    if (hOut && hOut != INVALID_HANDLE_VALUE) {
+        int hCrt = _open_osfhandle((intptr_t)hOut, _O_TEXT);
+        if (hCrt != -1) {
+            FILE* fp = _fdopen(hCrt, "w");
+            if (fp) {
+                *stdout = *fp;
+                setvbuf(stdout, nullptr, _IONBF, 0);
+            }
         }
+    } else {
+        FILE* fp = nullptr;
+        freopen_s(&fp, "CONOUT$", "w", stdout);
+    }
+    HANDLE hErr = GetStdHandle(STD_ERROR_HANDLE);
+    if (hErr && hErr != INVALID_HANDLE_VALUE) {
+        int hCrt = _open_osfhandle((intptr_t)hErr, _O_TEXT);
+        if (hCrt != -1) {
+            FILE* fp = _fdopen(hCrt, "w");
+            if (fp) {
+                *stderr = *fp;
+                setvbuf(stderr, nullptr, _IONBF, 0);
+            }
+        }
+    } else {
+        FILE* fp = nullptr;
+        freopen_s(&fp, "CONOUT$", "w", stderr);
     }
 #endif
     // --selftest: run all tests headlessly and exit.

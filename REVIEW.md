@@ -2,10 +2,16 @@
 
 ## Open
 
-1. **Phase 2 property tree and keyframe base (`crates/project/src/props.rs`)**:
-   Port the property tree (`Property`, `PropGroup`, `Node`, `ParamUi`, `Expression`, masks with `MaskMode`, feather, `Seg` paths) so that layer transforms are properties within this tree in preparation for Phase 5 keyframing and Phase 10 expressions.
+None.
 
 ## Done
+
+- **Phase 2 Property Tree & Keyframe Base (`crates/project/src/props.rs`, `crates/keyframe`)**:
+  - Property tree: `Property`, `PropGroup`, `Node`, `ParamUi`, `Expression`, `GroupKind`, masks with `MaskMode`, feather, `Seg` path parsing (`@uid`, `match`, `#index`, `match#N`).
+  - Values and keyframing: `Value` (Scalar, Vec2, Vec3, Color, Bool, Enum, Str, Layer, Path, Gradient), `Keyframe`, `Ease`, temporal and spatial Bezier interpolation, auto-Bezier, roving, time reverse, muting, orientation slerp.
+  - Layer transform integration: layer transforms are properties within the property tree (`transform/anchor`, `transform/position`, `transform/scale`, `transform/rotation`, `transform/opacity`), synchronized bidirectionally.
+  - JSON serialization & deserialization: full property tree and keyframes round-trip in JSON.
+  - Ported tests from `crates/project/src/tests.rs` (paths_resolve, masks_and_occurrence_paths, animate_and_roundtrip_json, numbered_names_keep_digits_that_end_a_word, unique_names_and_cycles, same_content_sees_allocated_ids_and_comp_edits) and `crates/keyframe/src/tests.rs` (22 keyframing & easing tests). All 59/59 self-tests pass.
 
 - **Phase 1 UI Layout & Vector Icons (items 0b and 2)**:
   - Ported `crates/ui-egui/src/icons.rs` (853 lines) 1:1 to C++ (`src/icons.h`, `src/icons.cpp`). All vector icons drawn on a 16x16 design grid onto `ImDrawList` (tools, switches, project items, transport, UI, appearance).
@@ -24,7 +30,7 @@
 
 ## Kiro asks
 
-Phase 1 layout and Phase 2 project/time model are ported with exact EffectCraft icons and 25/25 tests passing.
+Phase 1 layout and Phase 2 project/time model, property tree, and keyframe base are ported with exact EffectCraft icons and 59/59 tests passing.
 Next step: Phase 3 (frame rendering in Composition panel).
 
 **Phase 1** (`5518c0f`): the skeleton window with all seven panels (Project, Composition, Timeline, Effect Controls,
@@ -32,5 +38,5 @@ Tools, Preview, Info), menu bar, splash screen, 12 languages, build and install 
 (README.md, index.html + site/style.css + site/site.js, .github/FUNDING.yml, link.bf, description and topics set
 with `gh repo edit`, Pages turned on from main/root).
 
-**Phase 2** (`fd9ccfb`, `c6221bc`): the project model, exact time ticks, compositions, layers, switches, transforms,
-in/out points, and JSON save/load. Test: `Morpheus.exe --selftest` (25/25 pass).
+**Phase 2** (`fd9ccfb`, `c6221bc`, current): the project model, exact time ticks, property tree, keyframe base, compositions, layers, switches, transforms,
+in/out points, and JSON save/load. Test: `Morpheus.exe --selftest` (59/59 pass).
