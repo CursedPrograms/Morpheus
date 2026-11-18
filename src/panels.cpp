@@ -7,14 +7,16 @@
 //   [Left 300px | Centre flex | Right 300px]
 //   Left:   Project / Effect Controls tabs (full height)
 //   Centre: Composition / Layer tabs (top ~56%) over Timeline / Render Queue tabs
-//   Right:  Preview tab (top ~76px) over Properties / Align / Audio tabs
+//   Right:  Preview tab (top ~PREVIEW_FRAME) over Properties / Align / Audio tabs
 //
-// Label colours from EffectCraft (after crates/ui-egui/src/theme.rs):
-//   None=grey, Red, Yellow, Aqua, Pink, Lavender, Peach, Sea Foam, Blue, Green, Purple, Orange, Brown, Fuchsia, Cyan, Sandstone, Dark Green
+// Label colours from EffectCraft (after crates/engine/src/color.rs Label / theme.rs):
+//   None=grey, Red, Yellow, Aqua, Pink, Lavender, Peach, Sea Foam, Blue, Green,
+//   Purple, Orange, Brown, Fuchsia, Cyan, Sandstone, Dark Green
 //
 // Atelier colours: dark greys, #007bb7 accent, solid, no gradients.
 //
 // after EffectCraft (crates/ui-egui/src/dock.rs, crates/ui-egui/src/header.rs,
+//                    crates/ui-egui/src/icons.rs,
 //                    crates/ui-egui/src/panels/project.rs,
 //                    crates/ui-egui/src/panels/viewer.rs,
 //                    crates/ui-egui/src/panels/timeline.rs,
@@ -29,6 +31,7 @@
 #include "project.h"
 #include "time_.h"
 #include "lang.h"
+#include "icons.h"
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -65,7 +68,7 @@ static const ImU32
     C_WELL     = IM_COL32(0x14, 0x14, 0x14, 255);   // input field background
 
 // Label colours matching EffectCraft's Label enum (after crates/engine/src/color.rs Label).
-// These 16 entries correspond to Label::None..Label::Sandstone in order.
+// These 17 entries correspond to Label::None..Label::DarkGreen in order.
 static const ImU32 LABEL_COLORS[] = {
     IM_COL32(0x60,0x60,0x60,255), // None   – grey
     IM_COL32(0xc8,0x44,0x44,255), // Red
@@ -162,11 +165,9 @@ void init() {
 
 // ---------- low-level drawing helpers ----------
 
-// Draw a slim horizontal divider line.
 static void hLine(ImDrawList* dl, float x0, float x1, float y) {
     dl->AddLine({x0,y}, {x1,y}, C_LINE, DIVIDER);
 }
-// Draw a slim vertical divider line.
 static void vLine(ImDrawList* dl, float x, float y0, float y1) {
     dl->AddLine({x,y0}, {x,y1}, C_LINE, DIVIDER);
 }
@@ -176,7 +177,6 @@ static void vLine(ImDrawList* dl, float x, float y0, float y1) {
 static int tabStrip(const char* tabs[], int n, int active,
                     float x, float y, float w, float rowH,
                     ImDrawList* dl, ImGuiIO& io) {
-    // Tab bar background
     dl->AddRectFilled({x,y},{x+w, y+rowH}, C_TAB_BG);
     hLine(dl, x, x+w, y+rowH);
 
@@ -185,40 +185,35 @@ static int tabStrip(const char* tabs[], int n, int active,
     for (int i = 0; i < n; ++i) {
         const float tx = x + i * tabW;
         const float ty = y;
-        const float tw = (i == n-1) ? (x+w-tx) : tabW;  // last tab fills remainder
+        const float tw = (i == n-1) ? (x+w-tx) : tabW;
         const bool on = (i == active);
         const ImVec2 tMin{tx, ty}, tMax{tx+tw, ty+rowH};
         dl->AddRectFilled(tMin, tMax, on ? C_TAB_ACT : C_TAB_BG);
         if (on) {
-            // Active tab: blue top line
             dl->AddLine({tx,ty},{tx+tw,ty}, C_BLUE, 2.0f);
         }
-        // Label
         ImVec2 ts = ImGui::CalcTextSize(tabs[i]);
         const float lx = tx + (tw-ts.x)*0.5f;
         const float ly = ty + (rowH-ts.y)*0.5f;
         dl->AddText({lx,ly}, on ? C_TEXT : C_DIM, tabs[i]);
-        // Click detection
         if (ImGui::IsMouseClicked(0)) {
             const ImVec2& mp = io.MousePos;
             if (mp.x >= tMin.x && mp.x < tMax.x && mp.y >= tMin.y && mp.y < tMax.y)
                 result = i;
         }
-        // Vertical divider between tabs
         if (i < n-1)
             vLine(dl, tx+tw, ty+2, ty+rowH-2);
     }
     return result;
 }
 
-// A panel menu hamburger icon ("≡") in the tab strip corner.
+// Panel hamburger menu button in the tab strip corner
+// after EffectCraft crates/ui-egui/src/dock_ui.rs tab_menu_button
 static void panelMenuButton(float rx, float cy, ImDrawList* dl) {
-    for (int i = -1; i <= 1; ++i)
-        dl->AddLine({rx-10, cy+i*4}, {rx-2, cy+i*4}, C_DIM, 1.0f);
+    Icons::paintCentered(dl, {rx - 8.0f, cy}, 12.0f, Icons::Icon::Hamburger, C_DIM);
 }
 
 // ---------- panel content helpers ----------
-// Each function draws the contents of one named panel.
 
 // after EffectCraft crates/ui-egui/src/panels/project.rs
 static void drawProjectPanel(Project::Project* proj) {
@@ -231,116 +226,122 @@ static void drawProjectPanel(Project::Project* proj) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float avW  = ImGui::GetContentRegionAvail().x;
     const float avH  = ImGui::GetContentRegionAvail().y;
-    const ImVec2 winPos = ImGui::GetWindowPos();
 
     // --- Thumbnail / details header (~74 px) ---
+    // after EffectCraft crates/ui-egui/src/panels/project.rs details_header
     const float headH = 74.0f;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
-    dl->AddRectFilled(p0, {p0.x+avW, p0.y+headH}, C_APP_BG);
+    dl->AddRectFilled(p0, {p0.x + avW, p0.y + headH}, C_APP_BG);
     if (!proj->compositions.empty() && proj->activeComp >= 0) {
         const auto& comp = proj->compositions[(size_t)proj->activeComp];
-        // Thumbnail placeholder rectangle
-        dl->AddRectFilled({p0.x+8, p0.y+10}, {p0.x+104, p0.y+64}, C_WELL);
-        dl->AddRect({p0.x+8, p0.y+10}, {p0.x+104, p0.y+64}, C_LINE);
+        // Thumbnail placeholder rectangle with Comp icon
+        const ImVec2 thMin{p0.x + 8.0f, p0.y + 10.0f};
+        const ImVec2 thMax{p0.x + 100.0f, p0.y + 64.0f};
+        dl->AddRectFilled(thMin, thMax, C_WELL, 2.0f);
+        dl->AddRect(thMin, thMax, C_LINE, 2.0f);
+        Icons::paintCentered(dl, {(thMin.x + thMax.x)*0.5f, (thMin.y + thMax.y)*0.5f}, 24.0f, Icons::Icon::Comp, C_DIM);
+
         // Details text
-        dl->AddText({p0.x+112, p0.y+12}, C_TEXT, comp.name.c_str());
-        char dims[64];
-        snprintf(dims, sizeof dims, "%d x %d (1.00)", comp.width, comp.height);
-        dl->AddText({p0.x+112, p0.y+28}, C_DIM, dims);
-        char fps[64];
-        snprintf(fps, sizeof fps, "%.3g fps", comp.fps());
-        dl->AddText({p0.x+112, p0.y+42}, C_DIM, fps);
-        // Duration display using Tick formatting
+        dl->AddText({p0.x + 108.0f, p0.y + 10.0f}, C_TEXT, comp.name.c_str());
+        char dims[64]; snprintf(dims, sizeof dims, "%d x %d (1.00)", comp.width, comp.height);
+        dl->AddText({p0.x + 108.0f, p0.y + 26.0f}, C_DIM, dims);
+        char fps[64]; snprintf(fps, sizeof fps, "%.3g fps", comp.fps());
+        dl->AddText({p0.x + 108.0f, p0.y + 40.0f}, C_DIM, fps);
         const Project::Tick dur = comp.duration;
         const Project::FrameRate fr = comp.frameRate;
         std::string tc = Project::format_timecode_ae(fr.frame_at(dur), fr, false);
         char durBuf[64]; snprintf(durBuf, sizeof durBuf, "\xce\x94 %s", tc.c_str());
-        dl->AddText({p0.x+112, p0.y+56}, C_DIM, durBuf);
+        dl->AddText({p0.x + 108.0f, p0.y + 54.0f}, C_DIM, durBuf);
     } else {
-        // "Select an item to see its details" hint (after EffectCraft project.rs details_header)
         ImVec2 hs = ImGui::CalcTextSize(L("Select an item to see its details"));
-        dl->AddText({p0.x + (avW-hs.x)*0.5f, p0.y + (headH-hs.y)*0.5f},
-                    C_FAINT, L("Select an item to see its details"));
+        dl->AddText({p0.x + (avW - hs.x) * 0.5f, p0.y + (headH - hs.y) * 0.5f}, C_FAINT, L("Select an item to see its details"));
     }
     ImGui::Dummy({avW, headH});
-    hLine(dl, p0.x, p0.x+avW, p0.y+headH);
+    hLine(dl, p0.x, p0.x + avW, p0.y + headH);
 
-    // --- Search bar ---
+    // --- Search bar with Search icon ---
+    // after EffectCraft crates/ui-egui/src/panels/project.rs search bar
     static char s_search[128] = {};
-    ImGui::SetNextItemWidth(avW - 10);
+    const ImVec2 sp0 = ImGui::GetCursorScreenPos();
+    dl->AddRectFilled(sp0, {sp0.x + avW, sp0.y + 26.0f}, C_WELL);
+    Icons::paintCentered(dl, {sp0.x + 14.0f, sp0.y + 13.0f}, 14.0f, Icons::Icon::Search, C_DIM);
+    ImGui::SetCursorScreenPos({sp0.x + 28.0f, sp0.y + 2.0f});
+    ImGui::SetNextItemWidth(avW - 36.0f);
     ImGui::InputTextWithHint("##projsearch", L("Search project"), s_search, sizeof s_search);
-    hLine(dl, ImGui::GetWindowPos().x, ImGui::GetWindowPos().x+avW,
-          ImGui::GetCursorScreenPos().y);
+    ImGui::SetCursorScreenPos({sp0.x, sp0.y + 26.0f});
+    hLine(dl, sp0.x, sp0.x + avW, sp0.y + 26.0f);
 
-    // --- Column header: Name | Label | Type | Frame Rate ---
+    // --- Column header: Name | Label diamond | Type | Frame Rate ---
     // after EffectCraft crates/ui-egui/src/panels/project.rs draw_header / COLUMNS
-    const float hdrH = 18.0f;
+    const float hdrH = 20.0f;
     const ImVec2 hdrP = ImGui::GetCursorScreenPos();
-    dl->AddRectFilled(hdrP, {hdrP.x+avW, hdrP.y+hdrH}, C_APP_BG);
-    static const char* colHdrs[] = { L("Name"), L("Type"), L("Frame Rate") };
-    static const float colX[] = { 8.0f, avW*0.55f, avW*0.75f };
-    for (int i = 0; i < 3; ++i)
-        dl->AddText({hdrP.x+colX[i], hdrP.y+2}, C_DIM, colHdrs[i]);
-    // Label diamond icon (matches EffectCraft keyframe icon for the Label column)
-    {
-        const float lx = hdrP.x + avW*0.47f + 4;
-        const float ly = hdrP.y + hdrH*0.5f;
-        dl->AddRectFilled({lx-4, ly-4},{lx+4, ly+4}, C_DIM);
-    }
+    dl->AddRectFilled(hdrP, {hdrP.x + avW, hdrP.y + hdrH}, C_APP_BG);
+    dl->AddText({hdrP.x + 28.0f, hdrP.y + 3.0f}, C_DIM, L("Name"));
+    // Label diamond icon
+    Icons::paintCentered(dl, {hdrP.x + avW * 0.48f, hdrP.y + hdrH * 0.5f}, 12.0f, Icons::Icon::Keyframe, C_DIM);
+    dl->AddText({hdrP.x + avW * 0.55f, hdrP.y + 3.0f}, C_DIM, L("Type"));
+    dl->AddText({hdrP.x + avW * 0.78f, hdrP.y + 3.0f}, C_DIM, L("Frame Rate"));
     ImGui::Dummy({avW, hdrH});
-    hLine(dl, hdrP.x, hdrP.x+avW, hdrP.y+hdrH);
+    hLine(dl, hdrP.x, hdrP.x + avW, hdrP.y + hdrH);
 
     // --- Item list ---
     // after EffectCraft crates/ui-egui/src/panels/project.rs visible_rows
-    const float listH = avH - headH - 22 - hdrH - 24 - 10;
-    ImGui::BeginChild("##projlist", {avW, listH}, false,
-                      ImGuiWindowFlags_NoScrollbar);
-    if (proj->compositions.empty()) {
-        ImGui::TextDisabled("%s", L("No compositions."));
-    } else {
-        for (int i = 0; i < (int)proj->compositions.size(); ++i) {
-            const auto& comp = proj->compositions[(size_t)i];
-            const bool active = (i == proj->activeComp);
-            ImGui::PushID(i);
-            const ImVec2 rp = ImGui::GetCursorScreenPos();
-            // Label swatch (12x12 square, red for index 1, grey for others)
-            const ImU32 swCol = labelColor(i % 17 + (i > 0 ? 1 : 0));
-            dl->AddRectFilled({rp.x+2, rp.y+3}, {rp.x+14, rp.y+ROW_H-3}, swCol);
-            ImGui::Dummy({16, ROW_H}); ImGui::SameLine(0,0);
-            // Name + type, using Selectable for the whole row
-            char rowBuf[256];
-            snprintf(rowBuf, sizeof rowBuf, "  %s###item%d", comp.name.c_str(), i);
-            if (active) ImGui::PushStyleColor(ImGuiCol_Text, col4(C_BLUE));
-            if (ImGui::Selectable(rowBuf, active, 0, {avW-16, ROW_H})) {
-                if (g_actions && g_actions->onSelectComp) g_actions->onSelectComp(i);
-            }
-            if (active) ImGui::PopStyleColor();
-            // Type column
-            const ImVec2 rp2 = {rp.x + avW*0.55f, rp.y};
-            dl->AddText({rp2.x, rp2.y+2}, C_DIM, L("Composition"));
-            // Frame rate column
-            char fpsBuf[32];
-            snprintf(fpsBuf, sizeof fpsBuf, "%.3g", comp.fps());
-            dl->AddText({rp.x + avW*0.75f, rp.y+2}, C_DIM, fpsBuf);
-            ImGui::PopID();
+    const float botBarH = 28.0f;
+    const float listH = avH - headH - 26.0f - hdrH - botBarH - 4.0f;
+    ImGui::BeginChild("##projlist", {avW, listH}, false, ImGuiWindowFlags_NoScrollbar);
+    for (int i = 0; i < (int)proj->compositions.size(); ++i) {
+        const auto& comp = proj->compositions[(size_t)i];
+        const bool active = (i == proj->activeComp);
+        ImGui::PushID(i);
+        const ImVec2 rp = ImGui::GetCursorScreenPos();
+        // Label color swatch
+        const ImU32 swCol = labelColor(i % 17 + (i > 0 ? 1 : 0));
+        dl->AddRectFilled({rp.x + 4.0f, rp.y + 4.0f}, {rp.x + 14.0f, rp.y + ROW_H - 4.0f}, swCol, 1.0f);
+        // Comp icon
+        Icons::paintCentered(dl, {rp.x + 24.0f, rp.y + ROW_H * 0.5f}, 14.0f, Icons::Icon::Comp, active ? C_BLUE : C_DIM);
+        // Selectable item name
+        ImGui::SetCursorScreenPos({rp.x + 36.0f, rp.y});
+        char rowBuf[256]; snprintf(rowBuf, sizeof rowBuf, "%s###item%d", comp.name.c_str(), i);
+        if (active) ImGui::PushStyleColor(ImGuiCol_Text, col4(C_BLUE));
+        if (ImGui::Selectable(rowBuf, active, 0, {avW * 0.48f - 38.0f, ROW_H})) {
+            if (g_actions && g_actions->onSelectComp) g_actions->onSelectComp(i);
         }
+        if (active) ImGui::PopStyleColor();
+        // Type column
+        dl->AddText({rp.x + avW * 0.55f, rp.y + 2.0f}, C_DIM, L("Composition"));
+        // Frame rate column
+        char fpsBuf[32]; snprintf(fpsBuf, sizeof fpsBuf, "%.3g", comp.fps());
+        dl->AddText({rp.x + avW * 0.78f, rp.y + 2.0f}, C_DIM, fpsBuf);
+
+        ImGui::SetCursorScreenPos({rp.x, rp.y + ROW_H});
+        ImGui::PopID();
     }
     ImGui::EndChild();
 
     // --- Bottom bar: Interpret | New Folder | New Comp | bpc | Delete ---
     // after EffectCraft crates/ui-egui/src/panels/project.rs bottom bar buttons
-    hLine(dl, ImGui::GetWindowPos().x, ImGui::GetWindowPos().x+avW,
-          ImGui::GetCursorScreenPos().y);
-    ImGui::Dummy({1, 3});
-    if (ImGui::SmallButton(L("New Folder"))) {}
-    ImGui::SameLine();
-    if (ImGui::SmallButton(L("New Comp"))) {
+    const ImVec2 bp0 = ImGui::GetCursorScreenPos();
+    hLine(dl, bp0.x, bp0.x + avW, bp0.y);
+    dl->AddRectFilled({bp0.x, bp0.y + 1}, {bp0.x + avW, bp0.y + botBarH}, C_APP_BG);
+
+    ImGui::SetCursorScreenPos({bp0.x + 6.0f, bp0.y + 3.0f});
+    if (Icons::iconButton("##p_interpret", Icons::Icon::Link, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Interpret Footage"));
+    ImGui::SameLine(0, 4);
+    if (Icons::iconButton("##p_newfolder", Icons::Icon::NewFolder, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("New Folder"));
+    ImGui::SameLine(0, 4);
+    if (Icons::iconButton("##p_newcomp", Icons::Icon::NewComp, false, {22, 22})) {
         if (g_actions && g_actions->onNew) g_actions->onNew();
     }
-    ImGui::SameLine();
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("New Composition"));
+    ImGui::SameLine(0, 10);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 3.0f);
     ImGui::TextDisabled("8 bpc");
-    ImGui::SameLine(avW - 60);
-    if (ImGui::SmallButton(L("Delete"))) {}
+    ImGui::SameLine(avW - 28.0f);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 3.0f);
+    if (Icons::iconButton("##p_delete", Icons::Icon::Trash, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Delete"));
 }
 
 // after EffectCraft crates/ui-egui/src/panels/effect_controls.rs
@@ -354,65 +355,127 @@ static void drawCompositionViewer(Project::Project* proj) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const ImVec2 p = ImGui::GetCursorScreenPos();
 
-    // --- Viewer bottom bar (shows below the canvas) ---
-    // after EffectCraft crates/ui-egui/src/panels/viewer.rs viewer bottom bar
-    const float barH = 24.0f;
-    const float canvasH = avail.y - barH - 1;
+    const float barH = 26.0f;
+    const float canvasH = avail.y - barH - 1.0f;
 
-    // Canvas area: checkerboard transparency grid
+    // Checkerboard transparency background
     // after EffectCraft crates/ui-egui/src/panels/viewer.rs transparency grid
-    const float cs = 16;
-    for (float y = 0; y < canvasH; y += cs)
+    const float cs = 16.0f;
+    for (float y = 0; y < canvasH; y += cs) {
         for (float x = 0; x < avail.x; x += cs) {
-            const bool odd = ((int)(x/cs) + (int)(y/cs)) & 1;
+            const bool odd = (((int)(x / cs)) + ((int)(y / cs))) & 1;
             dl->AddRectFilled(
-                {p.x+x, p.y+y},
-                {p.x+x+(x+cs>avail.x?avail.x-x:cs),
-                 p.y+y+(y+cs>canvasH?canvasH-y:cs)},
-                odd ? IM_COL32(0x28,0x28,0x28,255)
-                    : IM_COL32(0x1e,0x1e,0x1e,255));
+                {p.x + x, p.y + y},
+                {p.x + std::min(x + cs, avail.x), p.y + std::min(y + cs, canvasH)},
+                odd ? IM_COL32(0x28, 0x28, 0x28, 255) : IM_COL32(0x1e, 0x1e, 0x1e, 255));
         }
-    // Composition name centred in the canvas
+    }
+
+    // Centered composition canvas frame (16:9 box)
+    const float aspect = 16.0f / 9.0f;
+    float cw = avail.x * 0.75f;
+    float ch = cw / aspect;
+    if (ch > canvasH * 0.8f) {
+        ch = canvasH * 0.8f;
+        cw = ch * aspect;
+    }
+    const ImVec2 cMin{ p.x + (avail.x - cw) * 0.5f, p.y + (canvasH - ch) * 0.5f };
+    const ImVec2 cMax{ cMin.x + cw, cMin.y + ch };
+    dl->AddRectFilled(cMin, cMax, IM_COL32(0x12, 0x12, 0x12, 255));
+    dl->AddRect(cMin, cMax, C_LINE, 1.0f);
+
+    // Centered comp name in canvas
     const char* label = (proj && proj->activeComp >= 0)
         ? proj->compositions[(size_t)proj->activeComp].name.c_str()
         : L("No composition");
     const ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText({p.x+(avail.x-ts.x)*0.5f, p.y+(canvasH-ts.y)*0.5f}, C_DIM, label);
+    dl->AddText({cMin.x + (cw - ts.x) * 0.5f, cMin.y + (ch - ts.y) * 0.5f}, C_DIM, label);
+
     ImGui::Dummy({avail.x, canvasH});
+    hLine(dl, p.x, p.x + avail.x, p.y + canvasH);
 
-    hLine(dl, p.x, p.x+avail.x, p.y+canvasH);
-
-    // --- Viewer bottom bar ---
-    // Fit popup, grid, current time, snapshot, channels, resolution, transparency, fast previews
+    // --- Bottom bar: zoom / Fit, grid, timecode, snapshots, channels, resolution, ROI, checker, fast previews ---
     // after EffectCraft crates/ui-egui/src/panels/viewer.rs bottom bar
     const ImVec2 bb = ImGui::GetCursorScreenPos();
-    dl->AddRectFilled(bb, {bb.x+avail.x, bb.y+barH}, C_APP_BG);
+    dl->AddRectFilled(bb, {bb.x + avail.x, bb.y + barH}, C_APP_BG);
 
-    // Zoom / Fit
-    ImGui::PushStyleColor(ImGuiCol_Button, col4(C_APP_BG));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col4(C_DEEP));
+    ImGui::SetCursorScreenPos({bb.x + 4.0f, bb.y + 2.0f});
+    // Fit / Zoom
     if (ImGui::SmallButton(L("Fit (100%)"))) {}
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    // Current time display using Tick
+    ImGui::SameLine(0, 4);
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bb.y + barH * 0.5f}, 10.0f, Icons::Icon::ChevronDown, C_DIM);
+    ImGui::Dummy({14, barH - 4.0f});
+
+    ImGui::SameLine(0, 4);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 4);
+    if (Icons::iconButton("##v_grid", Icons::Icon::Grid, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Grid and Guide Options"));
+
+    ImGui::SameLine(0, 6);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    // Current timecode in blue
     std::string tcStr = "0:00:00:00";
     if (proj && proj->activeComp >= 0) {
         const auto& comp = proj->compositions[(size_t)proj->activeComp];
-        const Project::FrameRate fr = comp.frameRate;
-        tcStr = Project::format_timecode_ae(0, fr, false);
+        tcStr = Project::format_timecode_ae(0, comp.frameRate, false);
     }
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
     ImGui::TextColored(col4(C_BLUE), "%s", tcStr.c_str());
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    // Channels (R/G/B/A/RGB)
+
+    ImGui::SameLine(0, 6);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    if (Icons::iconButton("##v_snap", Icons::Icon::Snapshot, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Take Snapshot"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##v_showsnap", Icons::Icon::ShowSnapshot, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Show Snapshot"));
+
+    ImGui::SameLine(0, 6);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    // Channel picker icon + "RGB"
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 8.0f, bb.y + barH * 0.5f}, 14.0f, Icons::Icon::Channel, C_TEXT);
+    ImGui::Dummy({16, barH - 4.0f});
+    ImGui::SameLine(0, 2);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
     ImGui::TextDisabled("RGB");
-    ImGui::SameLine();
-    ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-    ImGui::SameLine();
-    ImGui::TextDisabled(L("Auto (Full)"));
-    ImGui::PopStyleColor(2);
+
+    ImGui::SameLine(0, 6);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    // Resolution
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 2.0f);
+    ImGui::TextDisabled("%s", L("Auto (Full)"));
+    ImGui::SameLine(0, 2);
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bb.y + barH * 0.5f}, 10.0f, Icons::Icon::ChevronDown, C_DIM);
+    ImGui::Dummy({12, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    vLine(dl, ImGui::GetCursorScreenPos().x, bb.y + 4.0f, bb.y + barH - 4.0f);
+    ImGui::Dummy({4, barH - 4.0f});
+
+    ImGui::SameLine(0, 6);
+    if (Icons::iconButton("##v_roi", Icons::Icon::Region, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Region of Interest"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##v_checker", Icons::Icon::Checker, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Toggle Transparency Grid"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##v_draft3d", Icons::Icon::Draft3D, false, {20, 20})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Fast Previews"));
 }
 
 // after EffectCraft crates/ui-egui/src/panels/timeline.rs
@@ -430,133 +493,235 @@ static void drawTimeline(Project::Project* proj) {
     // --- Timeline header row ---
     // after EffectCraft crates/ui-egui/src/panels/timeline.rs current time + toolbar
     const float hdrH = 28.0f;
-    dl->AddRectFilled(p0, {p0.x+avW, p0.y+hdrH}, C_APP_BG);
+    dl->AddRectFilled(p0, {p0.x + avW, p0.y + hdrH}, C_APP_BG);
 
     // Current-time display (blue timecode)
     const Project::FrameRate fr = comp.frameRate;
     std::string tc = Project::format_timecode_ae(0, fr, false);
-    ImGui::SetCursorScreenPos({p0.x+6, p0.y+5});
+    ImGui::SetCursorScreenPos({p0.x + 8.0f, p0.y + 5.0f});
     ImGui::TextColored(col4(C_BLUE), "%s", tc.c_str());
-    ImGui::SameLine();
-    // fps label (e.g. "00090 (29.97 fps)")
-    char fpsBuf[64]; snprintf(fpsBuf, sizeof fpsBuf, " (%s fps)", fr.label().c_str());
+    ImGui::SameLine(0, 4);
+    char fpsBuf[64]; snprintf(fpsBuf, sizeof fpsBuf, "(00000 / %s fps)", fr.label().c_str());
     ImGui::TextDisabled("%s", fpsBuf);
 
-    // Right-side toolbar icons: shy, frame-blend, motion-blur, graph-editor
+    // Search bar
+    ImGui::SameLine(avW * 0.38f - 130.0f);
+    static char s_tlsearch[64] = {};
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 8.0f, p0.y + hdrH * 0.5f}, 12.0f, Icons::Icon::Search, C_DIM);
+    ImGui::SetCursorScreenPos({ImGui::GetCursorScreenPos().x + 18.0f, p0.y + 4.0f});
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::InputTextWithHint("##tlsearch", L("Search"), s_tlsearch, sizeof s_tlsearch);
+
+    // Right-side toolbar switches: Shy, Frame Blend, Motion Blur, Graph Editor
     // after EffectCraft crates/ui-egui/src/panels/timeline.rs toolbar switches
-    ImGui::SameLine(avW - 120);
-    if (ImGui::SmallButton("S")) {}  // shy layers toggle
-    ImGui::SameLine();
-    if (ImGui::SmallButton("FB")) {} // frame blend
-    ImGui::SameLine();
-    if (ImGui::SmallButton("MB")) {} // motion blur
-    ImGui::SameLine();
-    if (ImGui::SmallButton("GE")) {} // graph editor
+    ImGui::SameLine(avW - 104.0f);
+    ImGui::SetCursorScreenPos({p0.x + avW - 104.0f, p0.y + 3.0f});
+    if (Icons::iconButton("##tl_shy", Icons::Icon::Shy, comp.hideShy, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Hide all layers for which the Shy switch is set"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##tl_fb", Icons::Icon::FrameBlend, comp.enableFrameBlending, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Enable Frame Blending"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##tl_mb", Icons::Icon::MotionBlur, comp.enableMotionBlur, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Enable Motion Blur"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##tl_graph", Icons::Icon::Graph, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Graph Editor (Shift+F3)"));
 
-    hLine(dl, p0.x, p0.x+avW, p0.y+hdrH);
+    hLine(dl, p0.x, p0.x + avW, p0.y + hdrH);
 
-    // --- Layer column header ---
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs column header
-    const float colHdrH = 18.0f;
-    const ImVec2 chp = {p0.x, p0.y+hdrH};
-    dl->AddRectFilled(chp, {chp.x+avW, chp.y+colHdrH}, C_APP_BG);
-    // Column icons: eye/audio/solo/lock | label | # | type | Layer Name | switches | Parent
+    // --- Layer columns header ---
     // after EffectCraft crates/ui-egui/src/panels/timeline.rs COLUMNS
-    const char* colHdrs[] = { "#", L("Layer Name"), L("Parent & Link") };
-    const float colXPos[] = { 60, 110, avW*0.6f };
-    for (int i = 0; i < 3; ++i)
-        dl->AddText({chp.x+colXPos[i], chp.y+2}, C_DIM, colHdrs[i]);
-    hLine(dl, chp.x, chp.x+avW, chp.y+colHdrH);
+    const float colHdrH = 20.0f;
+    const ImVec2 chp = {p0.x, p0.y + hdrH};
+    dl->AddRectFilled(chp, {chp.x + avW, chp.y + colHdrH}, C_APP_BG);
 
-    // --- Layer rows ---
+    // Column icons: Eye, Speaker, Solo, Lock
+    Icons::paintCentered(dl, {chp.x + 10.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Eye, C_DIM);
+    Icons::paintCentered(dl, {chp.x + 24.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Speaker, C_DIM);
+    Icons::paintCentered(dl, {chp.x + 38.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Solo, C_DIM);
+    Icons::paintCentered(dl, {chp.x + 52.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Lock, C_DIM);
+    // Label diamond
+    Icons::paintCentered(dl, {chp.x + 68.0f, chp.y + colHdrH * 0.5f}, 10.0f, Icons::Icon::Keyframe, C_DIM);
+    dl->AddText({chp.x + 80.0f, chp.y + 3.0f}, C_DIM, "#");
+    dl->AddText({chp.x + 100.0f, chp.y + 3.0f}, C_DIM, L("Layer Name"));
+
+    // Switches headers
+    const float swBaseX = avW * 0.38f - 110.0f;
+    Icons::paintCentered(dl, {chp.x + swBaseX, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Shy, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 13.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Collapse, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 26.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Quality, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 39.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Fx, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 52.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::FrameBlend, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 65.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::MotionBlur, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 78.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Adjustment, C_DIM);
+    Icons::paintCentered(dl, {chp.x + swBaseX + 91.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Cube, C_DIM);
+
+    // Parent & Link
+    dl->AddText({chp.x + swBaseX + 108.0f, chp.y + 3.0f}, C_DIM, L("Parent & Link"));
+    Icons::paintCentered(dl, {chp.x + swBaseX + 175.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::PickWhip, C_DIM);
+
+    hLine(dl, chp.x, chp.x + avW, chp.y + colHdrH);
+
+    // --- Split: Left side layers, Right side tracks ---
+    const float botBarH = 22.0f;
+    const float layerAreaH = avH - hdrH - colHdrH - botBarH - 2.0f;
+    const float rulerH = 20.0f;
+    const float leftSideW = avW * 0.38f;
+    const float rightSideW = avW - leftSideW;
+
+    // Left child (layers list)
     // after EffectCraft crates/ui-egui/src/panels/timeline.rs layer rows
-    const float layerAreaH = avH - hdrH - colHdrH - 18 - 2;
-    const float rulerH = 18.0f;
-    ImGui::SetCursorScreenPos({p0.x, p0.y+hdrH+colHdrH});
-    ImGui::BeginChild("##tlayers", {avW*0.35f, layerAreaH}, false,
-                      ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetCursorScreenPos({p0.x, p0.y + hdrH + colHdrH});
+    ImGui::BeginChild("##tlayers", {leftSideW, layerAreaH}, false, ImGuiWindowFlags_NoScrollbar);
     for (int i = 0; i < (int)comp.layers.size(); ++i) {
         const auto& layer = comp.layers[(size_t)i];
         ImGui::PushID(i);
         const ImVec2 rp = ImGui::GetCursorScreenPos();
-        // Label colour swatch (small coloured square, left of #)
-        const ImU32 swCol = labelColor((i+1) % 17);
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            {rp.x+2, rp.y+2},{rp.x+12, rp.y+ROW_H-2}, swCol);
-        ImGui::Dummy({14, ROW_H}); ImGui::SameLine(0,2);
-        // Layer # (1-based, as in AE)
-        char num[8]; snprintf(num, sizeof num, "%d", i+1);
-        ImGui::TextDisabled("%s", num); ImGui::SameLine(0,2);
-        // Eye / audio / solo / lock icon buttons (small clickable text stand-ins)
-        ImGui::Text("%s", layer.switches.video ? "O" : " "); ImGui::SameLine(0,2);
-        // Layer type icon (first char of kind name)
-        const char* kindChar = "S";
+
+        // Switches icons on left
+        Icons::paintCentered(dl, {rp.x + 10.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Eye, layer.switches.video ? C_TEXT : C_FAINT);
+        Icons::paintCentered(dl, {rp.x + 24.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Speaker, layer.switches.audio ? C_TEXT : C_FAINT);
+        Icons::paintCentered(dl, {rp.x + 38.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Solo, layer.switches.solo ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {rp.x + 52.0f, rp.y + ROW_H * 0.5f}, 12.0f, layer.switches.locked ? Icons::Icon::Lock : Icons::Icon::LockOpen, layer.switches.locked ? C_TEXT : C_FAINT);
+
+        // Label colour swatch
+        const ImU32 swCol = labelColor((i + 1) % 17);
+        dl->AddRectFilled({rp.x + 64.0f, rp.y + 4.0f}, {rp.x + 74.0f, rp.y + ROW_H - 4.0f}, swCol, 1.0f);
+
+        // Layer #
+        char num[8]; snprintf(num, sizeof num, "%d", i + 1);
+        dl->AddText({rp.x + 80.0f, rp.y + 2.0f}, C_DIM, num);
+
+        // Exact Layer type icon from Icons::Icon
+        Icons::Icon typeIcon = Icons::Icon::Solid;
         switch (layer.kind) {
-            case Project::LayerKind::Text:        kindChar = "T"; break;
-            case Project::LayerKind::Shape:       kindChar = "*"; break;
-            case Project::LayerKind::Null:        kindChar = "N"; break;
-            case Project::LayerKind::Camera:      kindChar = "C"; break;
-            case Project::LayerKind::Light:       kindChar = "L"; break;
-            case Project::LayerKind::Footage:     kindChar = "F"; break;
-            case Project::LayerKind::Composition: kindChar = "P"; break;
+            case Project::LayerKind::Text:        typeIcon = Icons::Icon::TextLayer; break;
+            case Project::LayerKind::Shape:       typeIcon = Icons::Icon::ShapeLayer; break;
+            case Project::LayerKind::Null:        typeIcon = Icons::Icon::Null; break;
+            case Project::LayerKind::Camera:      typeIcon = Icons::Icon::Camera; break;
+            case Project::LayerKind::Light:       typeIcon = Icons::Icon::Light; break;
+            case Project::LayerKind::Footage:     typeIcon = Icons::Icon::Footage; break;
+            case Project::LayerKind::Composition: typeIcon = Icons::Icon::Comp; break;
+            case Project::LayerKind::Image:       typeIcon = Icons::Icon::Image; break;
             default: break;
         }
-        ImGui::TextDisabled("%s", kindChar); ImGui::SameLine(0,2);
+        Icons::paintCentered(dl, {rp.x + 104.0f, rp.y + ROW_H * 0.5f}, 12.0f, typeIcon, C_DIM);
+
         // Layer name
-        ImGui::Text("%s", layer.name.c_str());
+        ImGui::SetCursorScreenPos({rp.x + 116.0f, rp.y});
+        ImGui::Selectable(layer.name.c_str(), false, 0, {leftSideW - 240.0f, ROW_H});
+
+        // Layer switches on row
+        float swX = rp.x + swBaseX;
+        Icons::paintCentered(dl, {swX, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Shy, layer.switches.shy ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 13.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Collapse, layer.switches.collapse ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 26.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Quality, layer.switches.quality == Project::Quality::Best ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 39.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Fx, layer.switches.effects ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 52.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::FrameBlend, layer.switches.frameBlend ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 65.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::MotionBlur, layer.switches.motionBlur ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 78.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Adjustment, layer.switches.adjustment ? C_BLUE : C_FAINT);
+        Icons::paintCentered(dl, {swX + 91.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Cube, layer.switches.threeD ? C_BLUE : C_FAINT);
+
+        // Parent & Link: PickWhip + "None"
+        Icons::paintCentered(dl, {swX + 112.0f, rp.y + ROW_H * 0.5f}, 11.0f, Icons::Icon::PickWhip, C_DIM);
+        dl->AddText({swX + 124.0f, rp.y + 2.0f}, C_DIM, L("None"));
+
+        ImGui::SetCursorScreenPos({rp.x, rp.y + ROW_H});
         ImGui::PopID();
     }
     ImGui::EndChild();
 
-    // --- Layer bars (the timeline track area) ---
+    // 1-px vertical divider between layer list and tracks
+    vLine(dl, p0.x + leftSideW, p0.y + hdrH + colHdrH, p0.y + hdrH + colHdrH + layerAreaH);
+
+    // Right child (tracks / ruler / bars / playhead)
     // after EffectCraft crates/ui-egui/src/panels/timeline.rs layer bars / work area
-    const ImVec2 barAreaP = {p0.x + avW*0.35f, p0.y+hdrH+colHdrH};
-    const float barAreaW = avW*0.65f;
+    const ImVec2 barAreaP = {p0.x + leftSideW + 1.0f, p0.y + hdrH + colHdrH};
+    const float barAreaW = rightSideW - 1.0f;
     ImGui::SetCursorScreenPos(barAreaP);
-    ImGui::BeginChild("##tlbars", {barAreaW, layerAreaH}, false,
-                      ImGuiWindowFlags_NoScrollbar);
-    // Time ruler
+    ImGui::BeginChild("##tlbars", {barAreaW, layerAreaH}, false, ImGuiWindowFlags_NoScrollbar);
+    ImDrawList* trDl = ImGui::GetWindowDrawList();
+
+    // Time ruler background
     const ImVec2 rp2 = ImGui::GetCursorScreenPos();
-    ImGui::GetWindowDrawList()->AddRectFilled(
-        rp2, {rp2.x+barAreaW, rp2.y+rulerH},
-        C_APP_BG);
-    // Ruler tick marks (every second)
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs time ruler
+    trDl->AddRectFilled(rp2, {rp2.x + barAreaW, rp2.y + rulerH}, C_APP_BG);
+    hLine(trDl, rp2.x, rp2.x + barAreaW, rp2.y + rulerH);
+
+    // Ruler tick marks and second numbers
     const double durSec = comp.durationSeconds();
     const int nSecs = (int)durSec + 1;
-    for (int s = 0; s < nSecs && s < 20; ++s) {
-        const float rx = (durSec > 0) ? rp2.x + (float)((double)s / durSec) * barAreaW : rp2.x;
-        char tbuf[16]; snprintf(tbuf, sizeof tbuf, "%d", s);
-        ImGui::GetWindowDrawList()->AddLine({rx, rp2.y+2},{rx, rp2.y+rulerH-2}, C_LINE);
-        ImGui::GetWindowDrawList()->AddText({rx+2, rp2.y+2}, C_DIM, tbuf);
+    for (int s = 0; s < nSecs && s <= 30; ++s) {
+        const float rx = (durSec > 0) ? rp2.x + (float)((double)s / durSec) * (barAreaW - 20.0f) : rp2.x;
+        char tbuf[16]; snprintf(tbuf, sizeof tbuf, "%02ds", s);
+        trDl->AddLine({rx, rp2.y + rulerH - 6.0f}, {rx, rp2.y + rulerH - 1.0f}, C_LINE);
+        trDl->AddText({rx + 2.0f, rp2.y + 2.0f}, C_DIM, tbuf);
+        // Half-second sub-tick
+        if (s < nSecs && durSec > 0) {
+            const float hrx = rp2.x + (float)(((double)s + 0.5) / durSec) * (barAreaW - 20.0f);
+            trDl->AddLine({hrx, rp2.y + rulerH - 3.0f}, {hrx, rp2.y + rulerH - 1.0f}, C_LINE);
+        }
     }
+
+    // Work area bar across top of ruler
+    trDl->AddRectFilled({rp2.x, rp2.y}, {rp2.x + barAreaW * 0.85f, rp2.y + 3.0f}, C_BLUE);
+
     ImGui::Dummy({barAreaW, rulerH});
-    // Layer bars in label colours
+
+    // Layer bars in their exact label colors
     for (int i = 0; i < (int)comp.layers.size(); ++i) {
         const auto& layer = comp.layers[(size_t)i];
-        const ImU32 barCol = labelColor((i+1) % 17);
+        const ImU32 barCol = labelColor((i + 1) % 17);
         const ImVec2 brp = ImGui::GetCursorScreenPos();
-        const float inX  = (durSec > 0) ? brp.x + (float)(layer.inPt.seconds()  / durSec) * barAreaW : brp.x;
-        const float outX = (durSec > 0) ? brp.x + (float)(layer.outPt.seconds() / durSec) * barAreaW : brp.x;
-        ImGui::GetWindowDrawList()->AddRectFilled(
-            {inX, brp.y+1},{outX, brp.y+ROW_H-1}, barCol);
+        const float inX  = (durSec > 0) ? brp.x + (float)(layer.inPt.seconds()  / durSec) * (barAreaW - 20.0f) : brp.x;
+        const float outX = (durSec > 0) ? brp.x + (float)(layer.outPt.seconds() / durSec) * (barAreaW - 20.0f) : brp.x + 100.0f;
+        const float bw = std::max(outX - inX, 10.0f);
+
+        trDl->AddRectFilled({inX, brp.y + 2.0f}, {inX + bw, brp.y + ROW_H - 2.0f}, barCol, 2.0f);
+        // In/Out brackets
+        trDl->AddLine({inX, brp.y + 2.0f}, {inX, brp.y + ROW_H - 2.0f}, IM_COL32(255, 255, 255, 180), 1.5f);
+        trDl->AddLine({inX + bw, brp.y + 2.0f}, {inX + bw, brp.y + ROW_H - 2.0f}, IM_COL32(255, 255, 255, 180), 1.5f);
+        // Layer label text inside bar
+        trDl->AddText({inX + 6.0f, brp.y + 2.0f}, IM_COL32(255, 255, 255, 230), layer.name.c_str());
+
         ImGui::Dummy({barAreaW, ROW_H});
     }
-    // Playhead (blue vertical line at t=0 for now)
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs playhead
+
+    // Playhead at current time (t=0)
     {
-        const ImVec2 phBase = {barAreaP.x, p0.y+hdrH+colHdrH};
-        ImGui::GetWindowDrawList()->AddLine(
-            {phBase.x, phBase.y},
-            {phBase.x, phBase.y+layerAreaH},
-            C_BLUE, 1.5f);
+        const float phX = barAreaP.x;
+        // Needle line
+        trDl->AddLine({phX, barAreaP.y}, {phX, barAreaP.y + layerAreaH}, C_BLUE, 1.5f);
+        // Playhead head icon on ruler
+        const ImVec2 headPts[] = {
+            {phX - 5.0f, barAreaP.y},
+            {phX + 5.0f, barAreaP.y},
+            {phX + 5.0f, barAreaP.y + 10.0f},
+            {phX,        barAreaP.y + 15.0f},
+            {phX - 5.0f, barAreaP.y + 10.0f}
+        };
+        trDl->AddConvexPolyFilled(headPts, 5, C_BLUE);
     }
     ImGui::EndChild();
 
-    // --- Toggle Switches / Modes bar at the bottom ---
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs toggle switches/modes
-    ImGui::SetCursorScreenPos({p0.x, p0.y+hdrH+colHdrH+layerAreaH});
-    ImGui::TextDisabled(L("Toggle Switches / Modes"));
+    // --- Toggle Switches / Modes & zoom slider at bottom ---
+    const ImVec2 bp0 = {p0.x, p0.y + hdrH + colHdrH + layerAreaH};
+    hLine(dl, bp0.x, bp0.x + avW, bp0.y);
+    dl->AddRectFilled(bp0, {bp0.x + avW, bp0.y + botBarH}, C_APP_BG);
+
+    ImGui::SetCursorScreenPos({bp0.x + 8.0f, bp0.y + 2.0f});
+    if (ImGui::SmallButton(L("Toggle Switches / Modes"))) {}
+
+    // Zoom slider on the right
+    ImGui::SameLine(avW - 160.0f);
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bp0.y + botBarH * 0.5f}, 12.0f, Icons::Icon::MountainSmall, C_DIM);
+    ImGui::Dummy({12, botBarH - 4.0f});
+    ImGui::SameLine(0, 4);
+    static float s_tlZoom = 50.0f;
+    ImGui::SetNextItemWidth(100.0f);
+    ImGui::SliderFloat("##tlzoom", &s_tlZoom, 0.0f, 100.0f, "");
+    ImGui::SameLine(0, 4);
+    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bp0.y + botBarH * 0.5f}, 14.0f, Icons::Icon::MountainLarge, C_DIM);
 }
 
 // after EffectCraft crates/ui-egui/src/panels/live_preview.rs
@@ -565,44 +730,59 @@ static void drawPreviewPanel() {
     const float avW = ImGui::GetContentRegionAvail().x;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
 
-    // Transport controls row
-    // after EffectCraft crates/ui-egui/src/panels/live_preview.rs transport buttons:
-    // |<<  <  play  >  >>|
-    const float btnW = 20.0f;
-    ImGui::PushStyleColor(ImGuiCol_Button, col4(C_APP_BG));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, col4(C_DEEP));
-    if (ImGui::Button("|<", {btnW,20})) {}  ImGui::SameLine(0,2);
-    if (ImGui::Button("<",  {btnW,20})) {}  ImGui::SameLine(0,2);
-    if (ImGui::Button(L("Play"), {40,20})) {} ImGui::SameLine(0,2);
-    if (ImGui::Button(">",  {btnW,20})) {}  ImGui::SameLine(0,2);
-    if (ImGui::Button(">|", {btnW,20})) {}
-    ImGui::PopStyleColor(2);
+    // Transport buttons row with vector icons
+    // after EffectCraft crates/ui-egui/src/panels/live_preview.rs transport buttons
+    ImGui::SetCursorScreenPos({p0.x + 8.0f, p0.y + 4.0f});
+    if (Icons::iconButton("##p_first", Icons::Icon::First, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("First Frame"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##p_stepback", Icons::Icon::StepBack, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Previous Frame"));
+    ImGui::SameLine(0, 2);
+    static bool s_playing = false;
+    if (Icons::iconButton("##p_play", s_playing ? Icons::Icon::Pause : Icons::Icon::Play, s_playing, {26, 22})) {
+        s_playing = !s_playing;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", s_playing ? L("Stop") : L("Play"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##p_stepfwd", Icons::Icon::StepFwd, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Next Frame"));
+    ImGui::SameLine(0, 2);
+    if (Icons::iconButton("##p_last", Icons::Icon::Last, false, {22, 22})) {}
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Last Frame"));
+    ImGui::SameLine(0, 4);
+    static bool s_loop = true;
+    if (Icons::iconButton("##p_loop", Icons::Icon::Loop, s_loop, {22, 22})) {
+        s_loop = !s_loop;
+    }
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Loop"));
 
-    hLine(dl, p0.x, p0.x+avW, ImGui::GetCursorScreenPos().y);
+    hLine(dl, p0.x, p0.x + avW, p0.y + 32.0f);
 
-    // Shortcut / loop / range / play-from / frame rate / resolution
+    // Settings rows
     // after EffectCraft crates/ui-egui/src/panels/live_preview.rs settings rows
-    ImGui::TextDisabled("%s", L("Shortcut")); ImGui::SameLine(80); ImGui::TextDisabled("Spacebar");
-    static bool s_loop = false;
+    ImGui::SetCursorScreenPos({p0.x + 8.0f, p0.y + 36.0f});
+    ImGui::TextDisabled("%s", L("Shortcut")); ImGui::SameLine(90); ImGui::TextDisabled("Spacebar");
     ImGui::Checkbox(L("Loop"), &s_loop);
 
-    ImGui::TextDisabled("%s", L("Range"));    ImGui::SameLine(80);
+    ImGui::TextDisabled("%s", L("Range"));    ImGui::SameLine(90);
     ImGui::TextDisabled(L("Work Area Extended By Current Frame"));
-    ImGui::TextDisabled("%s", L("Play From")); ImGui::SameLine(80);
+    ImGui::TextDisabled("%s", L("Play From")); ImGui::SameLine(90);
     ImGui::TextDisabled(L("Current Time"));
-    ImGui::TextDisabled("%s", L("Frame Rate")); ImGui::SameLine(80);
+    ImGui::TextDisabled("%s", L("Frame Rate")); ImGui::SameLine(90);
     ImGui::TextDisabled("(29.97)");
-    ImGui::TextDisabled("%s", L("Resolution")); ImGui::SameLine(80);
+    ImGui::TextDisabled("%s", L("Resolution")); ImGui::SameLine(90);
     ImGui::TextDisabled(L("Auto"));
 
-    hLine(dl, p0.x, p0.x+avW, ImGui::GetCursorScreenPos().y);
+    hLine(dl, p0.x, p0.x + avW, ImGui::GetCursorScreenPos().y + 2.0f);
 
     // Cached-frames progress bar
     // after EffectCraft crates/ui-egui/src/panels/live_preview.rs cached frames bar
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 6.0f);
     const ImVec2 cbP = ImGui::GetCursorScreenPos();
-    ImGui::Dummy({avW, 6});
-    dl->AddRectFilled({cbP.x, cbP.y}, {cbP.x+avW*0.12f, cbP.y+5}, C_BLUE); // 12% cached
-    hLine(dl, cbP.x, cbP.x+avW, cbP.y+6);
+    dl->AddRectFilled(cbP, {cbP.x + avW, cbP.y + 6.0f}, C_WELL, 2.0f);
+    dl->AddRectFilled(cbP, {cbP.x + avW * 0.12f, cbP.y + 6.0f}, C_BLUE, 2.0f);
+    ImGui::Dummy({avW, 8.0f});
     ImGui::TextDisabled("36 / 300 %s", L("frames cached"));
 }
 
@@ -616,36 +796,33 @@ static void drawPropertiesPanel(Project::Project* proj) {
     const float avW = ImGui::GetContentRegionAvail().x;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
 
-    // "Properties: COMPNAME" header
-    // after EffectCraft crates/ui-egui/src/panels/properties.rs header
     const auto& comp = proj->compositions[(size_t)proj->activeComp];
     char hdr[256]; snprintf(hdr, sizeof hdr, "%s: %s", L("Properties"), comp.name.c_str());
-    dl->AddText({p0.x+6, p0.y+4}, C_TEXT, hdr);
-    ImGui::Dummy({avW, 20});
-    hLine(dl, p0.x, p0.x+avW, ImGui::GetCursorScreenPos().y);
+    dl->AddText({p0.x + 8.0f, p0.y + 4.0f}, C_TEXT, hdr);
+    ImGui::Dummy({avW, 20.0f});
+    hLine(dl, p0.x, p0.x + avW, ImGui::GetCursorScreenPos().y);
 
     // Layer Transform section
     // after EffectCraft crates/ui-egui/src/panels/properties.rs layer_transform section
     if (ImGui::CollapsingHeader(L("Layer Transform"), ImGuiTreeNodeFlags_DefaultOpen)) {
-        // Reset button on the right
-        ImGui::SameLine(avW - 42);
-        ImGui::SmallButton(L("Reset"));
-        // Transform properties: Anchor Point, Position, Scale, Rotation, Opacity
-        // Each has a stopwatch icon (phase 5 keyframes), label and value
-        // after EffectCraft crates/ui-egui/src/panels/properties.rs Transform props
+        ImGui::SameLine(avW - 46.0f);
+        if (ImGui::SmallButton(L("Reset"))) {}
+
         static const struct { const char* name; float v[2]; bool point; } xformProps[] = {
-            {L("Anchor Point"), {0, 0},     true},
-            {L("Position"),     {960, 540}, true},
-            {L("Scale"),        {100, 100}, true},
-            {L("Rotation"),     {0, 0},     false},
-            {L("Opacity"),      {100, 0},   false},
+            { L("Anchor Point"), {0, 0},     true },
+            { L("Position"),     {960, 540}, true },
+            { L("Scale"),        {100, 100}, true },
+            { L("Rotation"),     {0, 0},     false },
+            { L("Opacity"),      {100, 0},   false },
         };
         for (const auto& prop : xformProps) {
-            // Stopwatch icon (circle placeholder)
-            ImGui::Bullet();
-            ImGui::SameLine();
+            const ImVec2 cur = ImGui::GetCursorScreenPos();
+            // Stopwatch icon
+            Icons::paintCentered(dl, {cur.x + 8.0f, cur.y + 10.0f}, 12.0f, Icons::Icon::Stopwatch, C_BLUE);
+            ImGui::Dummy({16, 18});
+            ImGui::SameLine(0, 4);
             ImGui::TextDisabled("%s", prop.name);
-            ImGui::SameLine(130);
+            ImGui::SameLine(130.0f);
             if (prop.point) {
                 ImGui::TextColored(col4(C_BLUE), "%.0f  %.0f", prop.v[0], prop.v[1]);
             } else {
@@ -673,119 +850,169 @@ static void drawRenderQueue() {
 
 // ---------- header / tool bar ----------
 // after EffectCraft crates/ui-egui/src/header.rs show()
-// Tools bar: Atelier brand | Home | tool slots | snapping | workspaces | Discord pill
+// Tools bar: Morpheus brand | Home | tool slots | snapping | workspaces | » menu
 static void drawHeader(float x, float y, float w, float h) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
-    dl->AddRectFilled({x,y},{x+w,y+h}, C_HEADER);
-    hLine(dl, x, x+w, y+h);
+    dl->AddRectFilled({x, y}, {x + w, y + h}, C_HEADER);
+    hLine(dl, x, x + w, y + h);
 
-    float cx = x + 10;
+    const float cy = y + h * 0.5f;
+    float cx = x + 10.0f;
 
-    // --- Tool slots ---
-    // after EffectCraft crates/ui-egui/src/header.rs tool_slots and Tool::SLOTS:
-    // Selection | Hand | Zoom | Rotate | Pan Behind | Shape tools | Pen | Type | ...
-    // For phase 1 we show the 15 canonical slots with their abbreviated labels
-    // (later phases will draw proper icons via stb_truetype glyphs or inline bitmaps).
-    struct ToolDef { const char* label; const char* tip; };
-    static const ToolDef TOOLS[] = {
-        {"V",  "Selection Tool"},
-        {"W",  "Hand Tool"},
-        {"Z",  "Zoom Tool"},
-        {"C",  "Orbit Camera / Pan Camera / Dolly Camera"},
-        {"Y",  "Rotation Tool"},
-        {"A",  "Pan Behind Tool"},
-        {"Q",  "Shape: Rectangle / Round Rect / Ellipse / Polygon / Star"},
-        {"G",  "Pen / Add Vertex / Delete Vertex / Convert Vertex"},
-        {"T",  "Type / Vertical Type"},
-        {"Bs", "Brush / Clone Stamp / Eraser"},
-        {"Rb", "Roto Brush / Refine Edge"},
-        {"Pp", "Puppet Pin / Bend / Advanced / Starch / Overlap"},
+    // Brand mark (Morpheus M in Atelier blue)
+    {
+        const ImVec2 bmMin{cx, cy - 11.0f};
+        const ImVec2 bmMax{cx + 22.0f, cy + 11.0f};
+        dl->AddRectFilled(bmMin, bmMax, C_BLUE, 3.0f);
+        // Draw crisp 'M' glyph inside
+        const ImVec2 mPts[] = {
+            {cx + 5.0f, cy + 7.0f}, {cx + 5.0f, cy - 6.0f},
+            {cx + 11.0f, cy + 2.0f},
+            {cx + 17.0f, cy - 6.0f}, {cx + 17.0f, cy + 7.0f}
+        };
+        dl->AddPolyline(mPts, 5, IM_COL32(255, 255, 255, 255), 0, 2.0f);
+        cx += 28.0f;
+    }
+
+    // Home button
+    {
+        const ImVec2 hmMin{cx, cy - 12.0f};
+        const ImVec2 hmMax{cx + 24.0f, cy + 12.0f};
+        const bool hover = ImGui::IsMouseHoveringRect(hmMin, hmMax);
+        if (hover) dl->AddRectFilled(hmMin, hmMax, IM_COL32(0x30, 0x30, 0x30, 255), 2.0f);
+        Icons::paintCentered(dl, {cx + 12.0f, cy}, 16.0f, Icons::Icon::Home, hover ? C_TEXT : C_DIM);
+        if (hover) ImGui::SetTooltip("%s", L("Home"));
+        cx += 28.0f;
+    }
+
+    // Vertical divider
+    vLine(dl, cx, y + 6.0f, y + h - 6.0f);
+    cx += 8.0f;
+
+    // Tool slots (12 slots from EffectCraft crates/ui-egui/src/state.rs Tool::SLOTS)
+    struct ToolSlotDef {
+        Icons::Icon icon;
+        const char* label;
+        const char* tip;
+        bool hasFlyout;
+    };
+    static const ToolSlotDef SLOTS[] = {
+        { Icons::Icon::Selection,   "Selection",   "Selection Tool (V)", false },
+        { Icons::Icon::Hand,        "Hand",        "Hand Tool (H)", false },
+        { Icons::Icon::Zoom,        "Zoom",        "Zoom Tool (Z)", false },
+        { Icons::Icon::Orbit,       "Orbit",       "Orbit Camera Tool (C)", true },
+        { Icons::Icon::Rotate,      "Rotation",    "Rotation Tool (W)", false },
+        { Icons::Icon::PanBehind,   "PanBehind",   "Pan Behind (Anchor Point) Tool (Y)", false },
+        { Icons::Icon::Rectangle,   "Rectangle",   "Rectangle Tool (Q)", true },
+        { Icons::Icon::Pen,         "Pen",         "Pen Tool (G)", true },
+        { Icons::Icon::Type,        "Type",        "Horizontal Type Tool (Ctrl+T)", true },
+        { Icons::Icon::Brush,       "Brush",       "Brush Tool (Ctrl+B)", true },
+        { Icons::Icon::RotoBrush,   "RotoBrush",   "Roto Brush Tool (Alt+W)", true },
+        { Icons::Icon::Puppet,      "Puppet",      "Puppet Position Pin Tool (Ctrl+P)", true },
     };
     static int s_activeTool = 0;
-    // Group separators: after camera (2), pan-behind (5), type (8), roto (10)
-    // after EffectCraft crates/ui-egui/src/header.rs tool_slots separators
-    static const int SEP_AFTER[] = {2, 5, 7, 10};
-    static bool s_sepAfter[12] = {};  // tracks which tool indices have a sep after them
-    if (!s_sepAfter[2]) {  // only compute once
-        for (int sa : SEP_AFTER) if (sa < 12) s_sepAfter[sa] = true;
-    }
+    // Group separators after slots 2 (zoom), 5 (pan behind), 7 (pen), 10 (roto brush)
+    static const int SEP_AFTER[] = { 2, 5, 7, 10 };
 
     for (int i = 0; i < 12; ++i) {
+        const auto& slot = SLOTS[i];
         const bool active = (i == s_activeTool);
-        // Separator before groups 2+
-        if (i > 0 && s_sepAfter[i-1]) {
-            vLine(dl, cx+2, y+5, y+h-5);
-            cx += 6;
-        }
-        const ImVec2 btnMin{cx, y+4};
-        const ImVec2 btnMax{cx+24, y+h-4};
+        const ImVec2 btnMin{cx, cy - 13.0f};
+        const ImVec2 btnMax{cx + 26.0f, cy + 13.0f};
         const bool hover = ImGui::IsMouseHoveringRect(btnMin, btnMax);
-        dl->AddRectFilled(btnMin, btnMax,
-            active ? C_DEEP : (hover ? IM_COL32(0x30,0x30,0x30,255) : C_HEADER));
-        if (active)
-            dl->AddRect(btnMin, btnMax, C_BLUE);
-        const ImVec2 ts = ImGui::CalcTextSize(TOOLS[i].label);
-        dl->AddText({cx+(24-ts.x)*0.5f, y+(h-ts.y)*0.5f},
-                    active ? C_TEXT : C_DIM,
-                    TOOLS[i].label);
-        if (hover && ImGui::IsMouseClicked(0)) s_activeTool = i;
-        if (hover)
-            ImGui::SetTooltip("%s", TOOLS[i].tip);
-        cx += 26;
-    }
-    cx += 8;
 
-    // --- Snapping checkbox ---
-    // after EffectCraft crates/ui-egui/src/header.rs snapping_toggle
+        if (active) {
+            dl->AddRectFilled(btnMin, btnMax, C_DEEP, 2.0f);
+            dl->AddRect(btnMin, btnMax, C_BLUE, 2.0f);
+        } else if (hover) {
+            dl->AddRectFilled(btnMin, btnMax, IM_COL32(0x30, 0x30, 0x30, 255), 2.0f);
+        }
+
+        // Draw the exact EffectCraft vector icon
+        Icons::paintCentered(dl, {cx + 13.0f, cy}, 16.0f, slot.icon, active ? C_TEXT : (hover ? C_TEXT : C_DIM));
+
+        // Flyout corner triangle
+        if (slot.hasFlyout) {
+            const ImVec2 tri[] = {
+                {btnMax.x - 2.0f, btnMax.y - 6.0f},
+                {btnMax.x - 2.0f, btnMax.y - 2.0f},
+                {btnMax.x - 6.0f, btnMax.y - 2.0f}
+            };
+            dl->AddConvexPolyFilled(tri, 3, active ? C_TEXT : C_DIM);
+        }
+
+        if (hover && ImGui::IsMouseClicked(0)) s_activeTool = i;
+        if (hover) ImGui::SetTooltip("%s", slot.tip);
+
+        cx += 28.0f;
+        for (int sa : SEP_AFTER) {
+            if (i == sa) {
+                cx += 2.0f;
+                vLine(dl, cx, y + 8.0f, y + h - 8.0f);
+                cx += 6.0f;
+                break;
+            }
+        }
+    }
+
+    cx += 6.0f;
+    vLine(dl, cx, y + 8.0f, y + h - 8.0f);
+    cx += 10.0f;
+
+    // Snapping toggle
     static bool s_snap = true;
     {
-        const ImVec2 cbMin{cx, y+(h-16)*0.5f};
-        const ImVec2 cbMax{cx+16, y+(h+16)*0.5f};
+        const ImVec2 cbMin{cx, cy - 8.0f};
+        const ImVec2 cbMax{cx + 16.0f, cy + 8.0f};
         const bool hover = ImGui::IsMouseHoveringRect(cbMin, cbMax);
-        dl->AddRectFilled(cbMin, cbMax, s_snap ? C_BLUE : C_WELL);
-        dl->AddRect(cbMin, cbMax, C_LINE);
-        if (s_snap)
-            dl->AddText({cx+2, y+(h-14)*0.5f}, C_TEXT, "v");
+        dl->AddRectFilled(cbMin, cbMax, s_snap ? C_BLUE : C_WELL, 2.0f);
+        dl->AddRect(cbMin, cbMax, C_LINE, 2.0f);
+        if (s_snap) {
+            const ImVec2 chk[] = { {cx + 4.0f, cy}, {cx + 7.0f, cy + 4.0f}, {cx + 13.0f, cy - 4.0f} };
+            dl->AddPolyline(chk, 3, IM_COL32(255, 255, 255, 255), 0, 1.8f);
+        }
         if (hover && ImGui::IsMouseClicked(0)) s_snap = !s_snap;
-    }
-    cx += 20;
-    const float snx = cx;
-    {
+
         ImVec2 ts = ImGui::CalcTextSize(L("Snapping"));
-        dl->AddText({cx, y+(h-ts.y)*0.5f}, s_snap ? C_DIM : C_FAINT, L("Snapping"));
-        cx += ts.x + 6;
+        const ImVec2 lblPos{cx + 22.0f, cy - ts.y * 0.5f};
+        dl->AddText(lblPos, s_snap ? C_TEXT : C_DIM, L("Snapping"));
+        cx += 26.0f + ts.x;
     }
-    cx += 10;
 
-    // --- Workspace tabs (right side) ---
+    // Workspaces tabs on right
     // after EffectCraft crates/ui-egui/src/header.rs workspace_tabs
-    // Order right-to-left in the original: "Default", "Animation", "Standard", "Small Screen"
-    // We draw left-to-right for simplicity.
-    static const char* WS_TABS[] = { "Default", "Animation", "Standard", "Small Screen" };
-    static int s_wsTab = 0;
-    // Position them right-aligned
-    float wsX = x + w - 10;
-    for (int i = 3; i >= 0; --i) {
-        ImVec2 ts = ImGui::CalcTextSize(WS_TABS[i]);
-        const float tw = ts.x + 16;
-        wsX -= tw;
-        const ImVec2 trMin{wsX, y+2};
-        const ImVec2 trMax{wsX+tw, y+h-2};
-        const bool on = (i == s_wsTab);
-        const bool hover = ImGui::IsMouseHoveringRect(trMin, trMax);
-        dl->AddText({wsX+8, y+(h-ts.y)*0.5f},
-                    on ? C_TEXT : (hover ? C_TEXT : C_DIM),
-                    WS_TABS[i]);
-        if (on)
-            dl->AddLine({wsX+8, y+h-4},{wsX+tw-8, y+h-4}, C_BLUE, 2.0f);
-        if (hover && ImGui::IsMouseClicked(0)) s_wsTab = i;
-        wsX -= 2;
-    }
-    // "»" overflow menu button
-    wsX -= 24;
-    dl->AddText({wsX+6, y+(h-14)*0.5f}, C_DIM, "\xc2\xbb");  // UTF-8 »
+    static const char* WS_NAMES[] = { "Default", "Review", "Learn", "Small Screen", "Standard" };
+    static int s_wsIndex = 0;
+    float rx = x + w - 12.0f;
 
-    (void)snx;  // suppress unused warning
+    // "»" workspace overflow menu button
+    {
+        const ImVec2 moreMin{rx - 20.0f, cy - 11.0f};
+        const ImVec2 moreMax{rx, cy + 11.0f};
+        const bool hover = ImGui::IsMouseHoveringRect(moreMin, moreMax);
+        dl->AddText({rx - 15.0f, cy - 7.0f}, hover ? C_TEXT : C_DIM, "\xc2\xbb"); // »
+        rx -= 26.0f;
+    }
+
+    // Workspaces drawn right to left: Standard, Small Screen, Learn, Review, Default
+    for (int i = 4; i >= 0; --i) {
+        ImVec2 ts = ImGui::CalcTextSize(WS_NAMES[i]);
+        const float tw = ts.x + 16.0f;
+        rx -= tw;
+        const ImVec2 tabMin{rx, cy - 12.0f};
+        const ImVec2 tabMax{rx + tw, cy + 12.0f};
+        const bool active = (i == s_wsIndex);
+        const bool hover = ImGui::IsMouseHoveringRect(tabMin, tabMax);
+
+        dl->AddText({rx + 8.0f, cy - ts.y * 0.5f},
+                    active ? C_BLUE : (hover ? C_TEXT : C_DIM),
+                    WS_NAMES[i]);
+        if (active) {
+            dl->AddLine({rx + 8.0f, y + h - 3.0f}, {rx + tw - 8.0f, y + h - 3.0f}, C_BLUE, 2.0f);
+        }
+        if (hover && ImGui::IsMouseClicked(0)) s_wsIndex = i;
+        rx -= 4.0f;
+    }
 }
 
 // ---------- main draw ----------
@@ -891,14 +1118,11 @@ void draw(Project::Project* proj, const Actions& actions) {
     const ImVec2 cPos  = ImGui::GetCursorScreenPos();
     const float  cW    = ImGui::GetContentRegionAvail().x;
     const float  cH    = ImGui::GetContentRegionAvail().y;
-    ImDrawList*  dl    = ImGui::GetForegroundDrawList();
 
     // ----- Header / Tools bar (full width, HEADER_H px) -----
     // after EffectCraft crates/ui-egui/src/header.rs show()
     {
         ImGui::SetNextWindowPos({cPos.x, cPos.y});
-        // The header is drawn directly onto the window's draw list (no child window needed)
-        // so we just call drawHeader which uses GetWindowDrawList().
         ImGui::BeginChild("##header", {cW, HEADER_H}, false,
                           ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         const ImVec2 hp = ImGui::GetWindowPos();
@@ -911,7 +1135,7 @@ void draw(Project::Project* proj, const Actions& actions) {
     const float panelH  = cH - HEADER_H - 1;
 
     // Centre column width (flex)
-    const float centreW = cW - LEFT_W - RIGHT_W - 2;  // 2 for two 1-px dividers
+    const float centreW = cW - LEFT_W - RIGHT_W - 2;
 
     // Centre split heights
     const float centreTopH = panelH * SPLIT_Y;
@@ -932,11 +1156,9 @@ void draw(Project::Project* proj, const Actions& actions) {
         ldl->AddRectFilled(lp, {lp.x+LEFT_W, lp.y+panelH}, C_PANEL);
 
         // Tab strip: Project | Effect Controls
-        // after EffectCraft crates/ui-egui/src/dock.rs tabs() / TAB_STRIP
         const char* leftTabs[] = { L("Project"), L("Effect Controls") };
         s_leftTab = tabStrip(leftTabs, 2, s_leftTab,
                              lp.x, lp.y, LEFT_W, TAB_H, ldl, ImGui::GetIO());
-        // hamburger menu button
         panelMenuButton(lp.x+LEFT_W-2, lp.y+TAB_H*0.5f, ldl);
 
         // Panel content
@@ -970,7 +1192,7 @@ void draw(Project::Project* proj, const Actions& actions) {
         const char* centreTopTabs[] = { L("Composition"), L("Layer") };
         s_centreTop = tabStrip(centreTopTabs, 2, s_centreTop,
                                cp.x, cp.y, centreW, TAB_H, cdl, ImGui::GetIO());
-        // Comp breadcrumb path (after EffectCraft viewer.rs tab breadcrumb)
+        // Comp breadcrumb path
         if (proj && proj->activeComp >= 0) {
             const auto& comp = proj->compositions[(size_t)proj->activeComp];
             char crumb[256]; snprintf(crumb, sizeof crumb, " %s", comp.name.c_str());
@@ -987,7 +1209,6 @@ void draw(Project::Project* proj, const Actions& actions) {
         hLine(cdl, cp.x, cp.x+centreW, cp.y+centreTopH);
 
         // --- Centre bottom: Timeline / Render Queue tabs ---
-        // after EffectCraft crates/ui-egui/src/dock.rs Default workspace: tabs([Timeline,RenderQueue])
         const char* centreBotTabs[] = { L("Timeline"), L("Render Queue") };
         s_centreBot = tabStrip(centreBotTabs, 2, s_centreBot,
                                cp.x, cp.y+centreTopH+1, centreW, TAB_H, cdl, ImGui::GetIO());
@@ -1021,7 +1242,6 @@ void draw(Project::Project* proj, const Actions& actions) {
         rdl->AddRectFilled(rp, {rp.x+RIGHT_W, rp.y+panelH}, C_PANEL);
 
         // --- Right top: Preview (tabs: Preview / Info / Audio) ---
-        // after EffectCraft crates/ui-egui/src/dock.rs PREVIEW_FRAME tabs([Preview])
         const char* rightTopTabs[] = { L("Preview"), L("Info"), L("Audio") };
         static int s_previewTab = 0;
         s_previewTab = tabStrip(rightTopTabs, 3, s_previewTab,
@@ -1038,8 +1258,6 @@ void draw(Project::Project* proj, const Actions& actions) {
         hLine(rdl, rp.x, rp.x+RIGHT_W, rp.y+rightTopH);
 
         // --- Right bottom: Properties / Align / Audio / Effects & Presets ---
-        // after EffectCraft crates/ui-egui/src/dock.rs Default workspace:
-        //   tabs([Properties,Align,Audio,EffectsPresets])
         const char* rightBotTabs[] = {
             L("Properties"), L("Align"), L("Audio"), L("Effects & Presets") };
         s_rightBot = tabStrip(rightBotTabs, 4, s_rightBot,

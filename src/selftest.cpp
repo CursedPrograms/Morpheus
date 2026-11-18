@@ -10,6 +10,7 @@
 #include "selftest.h"
 #include "time_.h"
 #include "project.h"
+#include "icons.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -499,6 +500,78 @@ static bool t_transform_roundtrip() {
 }
 
 // =====================================================================
+// Icons tests (after EffectCraft crates/ui-egui/src/icons.rs)
+// =====================================================================
+static bool t_icons_concave_glyphs_are_filled_as_convex_pieces() {
+    int gCount = 0;
+    const auto* glyphs = Icons::getConcaveGlyphs(&gCount);
+    for (int g = 0; g < gCount; ++g) {
+        const auto& glyph = glyphs[g];
+        for (int p = 0; p < glyph.count; ++p) {
+            const auto& piece = glyph.pieces[p];
+            int n = piece.count;
+            if (n < 3) return false;
+            std::vector<float> turns(n);
+            for (int i = 0; i < n; ++i) {
+                ImVec2 a = piece.pts[i];
+                ImVec2 b = piece.pts[(i + 1) % n];
+                ImVec2 c = piece.pts[(i + 2) % n];
+                turns[i] = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+            }
+            bool allPos = true, allNeg = true;
+            for (float t : turns) {
+                if (t <= 0.0f) allPos = false;
+                if (t >= 0.0f) allNeg = false;
+            }
+            if (!allPos && !allNeg) return false;
+        }
+    }
+    return true;
+}
+
+static bool t_icons_keyframe_bounds_follow_each_half() {
+    using Icons::KeyHalf;
+    ImVec2 c(100.0f, 50.0f);
+    float r = 5.5f;
+    struct Extent { KeyHalf h; float lx; float ly; };
+    const Extent extents[] = {
+        { KeyHalf::Linear, r, r },
+        { KeyHalf::Hold,   r * 0.8f, r * 0.8f },
+        { KeyHalf::Bezier, r * 0.75f, r },
+        { KeyHalf::Auto,   r * 0.8f, r * 0.8f }
+    };
+    for (const auto& left : extents) {
+        for (const auto& right : extents) {
+            auto b = Icons::keyframeBounds(c, 11.0f, left.h, right.h);
+            float maxLy = std::max(left.ly, right.ly);
+            ImVec2 wantMin(c.x - left.lx - 0.25f, c.y - maxLy - 0.25f);
+            ImVec2 wantMax(c.x + right.lx + 0.25f, c.y + maxLy + 0.25f);
+            if (std::fabs(b.min.x - wantMin.x) > 1e-2f || std::fabs(b.min.y - wantMin.y) > 1e-2f ||
+                std::fabs(b.max.x - wantMax.x) > 1e-2f || std::fabs(b.max.y - wantMax.y) > 1e-2f)
+                return false;
+        }
+    }
+    return true;
+}
+
+static bool t_icons_keyframes_are_drawn_without_a_dark_outline() {
+    using Icons::KeyHalf;
+    const std::pair<KeyHalf, KeyHalf> pairs[] = {
+        { KeyHalf::Linear, KeyHalf::Linear },
+        { KeyHalf::Bezier, KeyHalf::Hold },
+        { KeyHalf::Auto,   KeyHalf::Linear }
+    };
+    for (const auto& p : pairs) {
+        auto shapes = Icons::keyframeShapes(ImVec2(10.0f, 10.0f), 11.0f, p.first, p.second);
+        if (shapes.size() != 2) return false;
+        for (const auto& s : shapes) {
+            if (s.size() < 3) return false;
+        }
+    }
+    return true;
+}
+
+// =====================================================================
 // Registration
 // =====================================================================
 void registerAll() {
@@ -526,6 +599,10 @@ void registerAll() {
     add("project::all_layer_kinds_roundtrip",  t_layer_kinds_roundtrip);
     add("project::switches_roundtrip",         t_switches_roundtrip);
     add("project::transform_roundtrip",        t_transform_roundtrip);
+    // Icons tests (after EffectCraft crates/ui-egui/src/icons.rs)
+    add("icons::concave_glyphs_are_filled_as_convex_pieces",   t_icons_concave_glyphs_are_filled_as_convex_pieces);
+    add("icons::keyframe_bounds_follow_each_half",             t_icons_keyframe_bounds_follow_each_half);
+    add("icons::keyframes_are_drawn_without_a_dark_outline",   t_icons_keyframes_are_drawn_without_a_dark_outline);
 }
 
 } // namespace SelfTest

@@ -57,6 +57,7 @@ set(SOURCES
     src/panels.cpp
     src/project.cpp
     src/time_.cpp
+    src/icons.cpp
     src/selftest.cpp)
 if(WIN32)
     list(APPEND SOURCES src/app.rc)

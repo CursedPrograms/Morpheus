@@ -53,6 +53,24 @@ Every feature gets a test hook: `Morpheus.exe --script NAME --capture shot.bmp` 
 a line, saves a screenshot and quits), and `--render project.morpheus out.png --frame N` renders one frame offline
 for checking. Build, run the test, look at the screenshot, then commit.
 
+## Port it properly (this overrides speed)
+
+Morpheus is a port of EffectCraft, not something inspired by it. For every feature:
+
+- **Icons: use EffectCraft's exact icons.** EffectCraft draws its icons in code on a 16x16 grid (`crates/ui-egui/src/icons.rs`, 853 lines, original artwork, MIT OR Apache-2.0). Port that file's drawing one to one onto ImDrawList so every icon (tools, panels, timeline switches, transport) looks exactly like EffectCraft's, used in the same places. Never draw your own or use letters as icons. The app logo stays Morpheus's own.
+- **Read the original first.** Open the EffectCraft files that do it and port them function by function: the same logic,
+  the same edge cases, the same settings and limits, names in C++ style. Note at each function where it came from:
+  `// after EffectCraft (crates/.../file.rs fn_name)`.
+- **Port its tests too.** Every `#[test]` in the files you port becomes a C++ test (`cpp/tests`, built by CMake and
+  run by `Morpheus.exe --selftest`). A feature is done only when the original's tests pass in C++, plus the screenshot
+  check. Run all the tests before every commit; never delete or weaken a test to make it pass.
+- **Nothing simplified.** No placeholders, stubs, "first cut", "simplified" or "not a full ..." versions. If EffectCraft
+  does it, Morpheus does it. If something truly can't be ported (a Rust-only dependency, another platform), write why
+  under "Kiro asks" in REVIEW.md and port everything around it.
+- **Say what was ported.** Each commit message names the EffectCraft files and functions it ports and how many of their
+  tests pass (e.g. "edit.rs heal, join_gain_env; 4/4 tests").
+- When a phase is done, compare it with EffectCraft file by file and list anything left in REVIEW.md before moving on.
+
 ## House rules
 
 - Comments say what and why, in plain words. 4-space indents. A short comment on each function.
@@ -66,6 +84,7 @@ for checking. Build, run the test, look at the screenshot, then commit.
 - Read `REVIEW.md` in this folder before each new step: Claude reviews every commit and writes fixes there. Do
   everything under "Open" first.
 - If you're blocked, write why at the bottom of REVIEW.md under "Kiro asks" and stop.
+- Installer shortcuts (Start Menu, desktop, Linux .desktop Name=) are named "Atelier - <Name>" so the suite sorts together; installing and uninstalling also remove the old plain-named shortcut.
 
 ## The repo (once phase 1 works, and kept up to date after each phase)
 

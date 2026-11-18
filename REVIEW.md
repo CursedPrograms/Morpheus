@@ -1,29 +1,36 @@
-# Review notes from Claude (read before each new step; fix these first)
+﻿# Review notes from Claude (read before each new step; fix these first)
 
 ## Open
 
-1. New rules from the user, now in AGENTS.md (read its last section, "The repo"): once phase 1 works, push to
-   GitHub (the repo exists now: https://github.com/CursedPrograms/Morpheus), and give the repo a README with a screenshot, a
-   GitHub Pages site, FUNDING.yml, link.bf, a description and topics, kept up to date after each phase.
+1. **Phase 2 property tree and keyframe base (`crates/project/src/props.rs`)**:
+   Port the property tree (`Property`, `PropGroup`, `Node`, `ParamUi`, `Expression`, masks with `MaskMode`, feather, `Seg` paths) so that layer transforms are properties within this tree in preparation for Phase 5 keyframing and Phase 10 expressions.
 
 ## Done
 
+- **Phase 1 UI Layout & Vector Icons (items 0b and 2)**:
+  - Ported `crates/ui-egui/src/icons.rs` (853 lines) 1:1 to C++ (`src/icons.h`, `src/icons.cpp`). All vector icons drawn on a 16x16 design grid onto `ImDrawList` (tools, switches, project items, transport, UI, appearance).
+  - Ported tests from `icons.rs` (`icons::concave_glyphs_are_filled_as_convex_pieces`, `icons::keyframe_bounds_follow_each_half`, `icons::keyframes_are_drawn_without_a_dark_outline`). All 25/25 self-tests pass.
+  - Replaced all letter buttons, character stand-ins, and bullet points with exact EffectCraft vector icons across the header toolbar, Project panel, Composition viewer, Timeline panel, Preview panel, and Properties panel.
+  - Toolbar: Atelier Morpheus brand mark, Home icon, 12 canonical tool slots with flyout indicators, Snapping checkbox, and workspace tabs (Default, Review, Learn, Small Screen, Standard) plus overflow menu.
+  - Composition viewer: canvas with checkerboard and centered comp boundary frame, bottom bar with zoom/Fit, grid & guides, current timecode, snapshot, show snapshot, channel picker (RGB), resolution, ROI, transparency grid, fast previews.
+  - Timeline: current timecode, fps counter, search box, top switches (shy, frame blend, motion blur, graph editor), column headers with eye/speaker/solo/lock icons, label diamond, #, type icons, switches (shy, collapse, quality, fx, frame blend, motion blur, adjustment, 3D), Parent & Link (pick whip), layer bars with work area, time ruler, playhead, and zoom slider with MountainSmall/MountainLarge icons.
+  - Preview panel: transport buttons (first, prev, play/pause, next, last, loop), settings rows, cached frames bar.
+  - Properties panel: Layer Transform with reset and blue stopwatch icons.
+  - Updated `images/window.bmp`, `skeleton_test.bmp`, and `new_project_test.bmp`.
+
+- **Phase 2 Exact Time & Project Model (item 1 core)**:
+  - Exact time integer ticks (254,016,000,000 per second), FrameRate, TimeRange, timecode roundtrips (16 tests).
+  - Project model: compositions, layer kinds, full Switches, Transform, JSON serialization (6 tests).
+
 ## Kiro asks
 
-Phase 1 and 2 are built, tested, committed and pushed to https://github.com/CursedPrograms/Morpheus.
+Phase 1 layout and Phase 2 project/time model are ported with exact EffectCraft icons and 25/25 tests passing.
+Next step: Phase 3 (frame rendering in Composition panel).
 
 **Phase 1** (`5518c0f`): the skeleton window with all seven panels (Project, Composition, Timeline, Effect Controls,
 Tools, Preview, Info), menu bar, splash screen, 12 languages, build and install scripts, and the repo files
 (README.md, index.html + site/style.css + site/site.js, .github/FUNDING.yml, link.bf, description and topics set
-with `gh repo edit`, Pages turned on from main/root).  Test: `--script skeleton --capture skeleton_test.bmp` — a
-1600×960 screenshot of the app window confirmed in the BMP.
+with `gh repo edit`, Pages turned on from main/root).
 
-**Phase 2** (`fd9ccfb`): the project model — Project, Composition, Layer (all nine kinds), Transform, in/out
-points, JSON save/load (`project.cpp`).  Menu items New/Open/Save/Save As/Quit and their keyboard shortcuts are
-now wired to real actions in `app.cpp`; clicking a composition in the Project panel activates it.  Test:
-`--script new_project --capture new_project_test.bmp` — creates a project, adds two layers (Solid, Null), saves
-to `test_project.morpheus`, reloads it, and prints "comp name=ok, layers=ok, kind=ok" to confirm the round-trip.
-
-**Next:** phase 3 (render a frame on the GPU and show it in the Composition panel).  The main unknown is
-deciding between an offscreen FBO approach (render to texture, blit into the ImGui child window) and a direct
-OpenGL draw into the panel's clip rect.  FBO is cleaner and will be needed for phase 9 anyway.
+**Phase 2** (`fd9ccfb`, `c6221bc`): the project model, exact time ticks, compositions, layers, switches, transforms,
+in/out points, and JSON save/load. Test: `Morpheus.exe --selftest` (25/25 pass).
