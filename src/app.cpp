@@ -28,7 +28,7 @@ static std::string s_prefs;
 static bool        s_quit = false;
 
 // Current project; nullptr when no project is open.
-static Project::Project* s_proj = nullptr;
+static Project::ProjectData* s_proj = nullptr;
 
 // Open a file dialog and return the chosen path (empty on cancel).
 static std::string fileOpen(const char* filter) {
@@ -78,12 +78,12 @@ static void setTitle() {
 // Create a new project and make it current.
 static void newProject() {
     delete s_proj;
-    s_proj = new Project::Project(Project::Project::makeNew());
+    s_proj = new Project::ProjectData(Project::ProjectData::makeNew());
     setTitle();
 }
 
 static void openProject(const std::string& path) {
-    auto* p = new Project::Project();
+    auto* p = new Project::ProjectData();
     if (Project::load(*p, path)) {
         delete s_proj;
         s_proj = p;
@@ -185,20 +185,22 @@ void script(const std::string& name) {
         if (s_proj) {
             // Add a couple of test layers.
             Project::Layer solid;
+            solid.id.v    = s_proj->alloc();
             solid.name    = "Solid 1";
             solid.kind    = Project::LayerKind::Solid;
-            solid.solidR  = 200;
-            solid.solidG  = 100;
-            solid.solidB  = 50;
-            solid.outPt   = 10.0;
+            solid.solidR  = 200.f/255.f;
+            solid.solidG  = 100.f/255.f;
+            solid.solidB  = 50.f/255.f;
+            solid.outPt   = Project::Tick::from_seconds_f64(10.0);
             solid.xform.posX = 960;
             solid.xform.posY = 540;
             s_proj->compositions[0].layers.push_back(solid);
 
             Project::Layer nullLayer;
+            nullLayer.id.v  = s_proj->alloc();
             nullLayer.name  = "Null 1";
             nullLayer.kind  = Project::LayerKind::Null;
-            nullLayer.outPt = 10.0;
+            nullLayer.outPt = Project::Tick::from_seconds_f64(10.0);
             s_proj->compositions[0].layers.push_back(nullLayer);
 
             // Save to a temp file.
@@ -207,7 +209,7 @@ void script(const std::string& name) {
             SDL_Log("script new_project: save %s -> %s.", tmpPath.c_str(), saved ? "ok" : "FAILED");
 
             // Reload and check.
-            Project::Project loaded;
+            Project::ProjectData loaded;
             const bool ok = Project::load(loaded, tmpPath);
             SDL_Log("script new_project: load %s.", ok ? "ok" : "FAILED");
             if (ok) {

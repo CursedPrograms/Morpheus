@@ -55,7 +55,9 @@ set(SOURCES
     src/splash.cpp
     src/lang.cpp
     src/panels.cpp
-    src/project.cpp)
+    src/project.cpp
+    src/time_.cpp
+    src/selftest.cpp)
 if(WIN32)
     list(APPEND SOURCES src/app.rc)
 endif()

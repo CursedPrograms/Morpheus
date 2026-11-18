@@ -1,29 +1,34 @@
-// Morpheus - panel layout: the seven EffectCraft-style panels (Project, Composition, Timeline,
-// Effect Controls, Tools, Preview, Info) docked in a fixed multi-column layout.
-// Each panel is an ImGui child window inside the main window's client area.
+// Morpheus - panel layout: EffectCraft's docked panel layout ported from
+// crates/ui-egui/src/dock.rs and crates/ui-egui/src/panels/.
+// Default workspace: Tools header across the top, then:
+//   left col (300 px):  Project / Effect Controls tabs
+//   centre:             Composition / Layer tabs over Timeline / Render Queue tabs
+//   right col (300 px): Preview (short) over Properties / Align / Audio tabs
+// Atelier greys + #007bb7 blue, solid, no gradients.
+// after EffectCraft (crates/ui-egui/src/dock.rs workspace_root "Default")
 #pragma once
 #include <string>
 #include <functional>
 
-// Forward declaration for the project model (phase 2).
-namespace Project { struct Project; }
+// Forward declaration for the project model.
+namespace Project { struct ProjectData; }
 
 namespace Panels {
 
-// App-level actions the panels can request (phase 2+).
+// App-level actions the panels can request.
 struct Actions {
-    std::function<void()>              onNew;       // File > New Composition
-    std::function<void()>              onOpen;      // File > Open
-    std::function<void()>              onSave;      // File > Save
-    std::function<void()>              onSaveAs;    // File > Save As
-    std::function<void()>              onQuit;      // File > Quit
-    std::function<void(int)>           onSelectComp;// click a comp in the Project panel
+    std::function<void()>              onNew;
+    std::function<void()>              onOpen;
+    std::function<void()>              onSave;
+    std::function<void()>              onSaveAs;
+    std::function<void()>              onQuit;
+    std::function<void(int)>           onSelectComp;
 };
 
 // Initialise panel state (call once after ImGui is set up).
 void init();
 
 // Draw all panels for the current frame.  proj may be nullptr while no project is open.
-void draw(Project::Project* proj, const Actions& actions);
+void draw(Project::ProjectData* proj, const Actions& actions);
 
 }  // namespace Panels

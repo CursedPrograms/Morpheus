@@ -1,11 +1,23 @@
 // Morpheus - entry point: SDL2 window, OpenGL 3 context, Dear ImGui, splash, main loop.
 // After EffectCraft architecture; Chimera's main.cpp pattern adapted for Morpheus.
 //
-//   Morpheus                               opens the app normally
+//   Morpheus                                   opens the app normally
 //   Morpheus --script NAME --capture out.bmp   scripted test + screenshot, then quit
 //   Morpheus --render project.morpheus out.png --frame N   offline frame render (phase 3+)
+//   Morpheus --selftest                        run all self-tests and exit (0=all pass)
 #include "app.h"
 #include "splash.h"
+#include "selftest.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include <SDL.h>
 #include <SDL_opengl.h>
@@ -94,6 +106,25 @@ static void splashSay(const char* status, float progress) {
 }
 
 int main(int argc, char** argv) {
+#ifdef _WIN32
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (!hOut || hOut == INVALID_HANDLE_VALUE) {
+        if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+            FILE* fp = nullptr;
+            freopen_s(&fp, "CONOUT$", "w", stdout);
+            freopen_s(&fp, "CONOUT$", "w", stderr);
+        }
+    }
+#endif
+    // --selftest: run all tests headlessly and exit.
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--selftest") {
+            SelfTest::registerAll();
+            int failures = SelfTest::run();
+            return (failures == 0) ? 0 : 1;
+        }
+    }
+
     std::string capture, scriptName, projectPath;
     for (int i = 1; i < argc; ++i) {
         const std::string a = argv[i];
@@ -103,7 +134,10 @@ int main(int argc, char** argv) {
         else if (!a.empty() && a[0] != '-') projectPath = a;
     }
 
-    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) return 1;
+    if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
+        printf("SDL_Init failed: %s\n", SDL_GetError());
+        return 1;
+    }
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
@@ -115,9 +149,16 @@ int main(int argc, char** argv) {
     SDL_Window* win = SDL_CreateWindow("Morpheus",
                                        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
                                        1600, 960, winFlags);
-    if (!win) return 1;
+    if (!win) {
+        printf("SDL_CreateWindow failed: %s\n", SDL_GetError());
+        return 1;
+    }
     SDL_SetWindowMinimumSize(win, 900, 560);
     SDL_GLContext gl = SDL_GL_CreateContext(win);
+    if (!gl) {
+        printf("SDL_GL_CreateContext failed: %s\n", SDL_GetError());
+        return 1;
+    }
     SDL_GL_MakeCurrent(win, gl);
     SDL_GL_SetSwapInterval(1);
 
@@ -208,8 +249,9 @@ int main(int argc, char** argv) {
 
         // --capture mode: run the script on frame 2, then save a screenshot and quit.
         if (!capture.empty()) {
-            if (frames == 2 && !scriptName.empty())
+            if (frames == 2 && !scriptName.empty()) {
                 App::script(scriptName);
+            }
             quietFrames = App::busy() ? 0 : quietFrames + 1;
             if (frames >= 8 && quietFrames >= 4) {
                 std::vector<unsigned char> px((size_t)w * h * 4);
