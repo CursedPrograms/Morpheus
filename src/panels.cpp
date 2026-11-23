@@ -178,15 +178,44 @@ struct GraphEaseDrag {
 };
 
 static SelectedKey s_selectedKey;
+static std::vector<Timeline::KeyRef> s_selectedKeys;
 static KeyDrag s_keyDrag;
 static GraphEaseDrag s_graphEaseDrag;
 static bool s_graphSpeed = false;
 struct LayerRowHit { ImVec2 min; ImVec2 max; uint64_t id; size_t index; };
+struct PropertyRowHit { float y; size_t layer; Props::Uid property; };
 static std::vector<LayerRowHit> s_layerRowHits;
+static std::vector<PropertyRowHit> s_propertyRowHits;
 static bool s_layerReorderActive = false;
 static std::vector<uint64_t> s_layerReorderIds;
 static bool s_layerMarqueeActive = false;
 static ImVec2 s_layerMarqueeStart{};
+static bool s_keyMarqueeActive = false;
+static ImVec2 s_keyMarqueeStart{};
+static bool s_keyMarkerClicked = false;
+
+static bool sameKeyRef(const Timeline::KeyRef& a, const SelectedKey& b) {
+    return a.layer == b.layer && a.property == b.property && a.time == b.time;
+}
+
+static bool keyIsSelected(uint64_t layer, Props::Uid property, Project::Tick time,
+                          size_t /*dimension*/, bool /*graph*/) {
+    return std::any_of(s_selectedKeys.begin(), s_selectedKeys.end(), [&](const Timeline::KeyRef& key) {
+        return key.layer == layer && key.property == property && key.time == time;
+    });
+}
+
+static void selectKey(SelectedKey key, bool toggle) {
+    const Timeline::KeyRef ref{key.layer, key.property, key.time};
+    const bool remains = Timeline::selectKey(s_selectedKeys, ref, toggle);
+    if (remains) s_selectedKey = key;
+    else if (sameKeyRef(ref, s_selectedKey)) {
+        s_selectedKey = s_selectedKeys.empty()
+            ? SelectedKey{}
+            : SelectedKey{s_selectedKeys.back().layer, s_selectedKeys.back().property,
+                          s_selectedKeys.back().time, 0};
+    }
+}
 
 void invalidateFrameCache() {
     s_frameCache.clear();
@@ -208,6 +237,7 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_playing = false;
     s_graphEditor = false;
     s_selectedKey = {};
+    s_selectedKeys.clear();
     s_keyDrag = {};
     s_graphEaseDrag = {};
     s_graphSpeed = false;
@@ -215,6 +245,8 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_layerReorderActive = false;
     s_layerReorderIds.clear();
     s_layerMarqueeActive = false;
+    s_propertyRowHits.clear();
+    s_keyMarqueeActive = false;
     invalidateFrameCache();
 }
 
@@ -223,8 +255,10 @@ void prepareKeyframeCapture(uint64_t layerId, bool graphEditor, bool speedGraph,
     prepareTimelineCapture(layerId);
     s_graphEditor = graphEditor;
     s_graphSpeed = speedGraph;
-    if (graphEditor && propertyId != 0)
+    if (propertyId != 0) {
         s_selectedKey = {layerId, propertyId, Project::Tick(keyTimeTicks), dimension};
+        s_selectedKeys = {{layerId, propertyId, Project::Tick(keyTimeTicks)}};
+    }
 }
 
 static void setCurrentTime(Project::Tick time) {
@@ -399,9 +433,7 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
                            size_t dimension, ImDrawList* drawList, ImVec2 center,
                            bool graph, bool graphValueEdit,
                            double graphMin, double graphMax, float graphHeight) {
-    const bool selected = s_selectedKey.layer == layer.id.v &&
-        s_selectedKey.property == property.uid && s_selectedKey.time == key.time &&
-        (!graph || s_selectedKey.dimension == dimension);
+    const bool selected = keyIsSelected(layer.id.v, property.uid, key.time, dimension, graph);
     Icons::paintCentered(drawList, center, graph ? 11.0f : 9.0f,
                          Icons::Icon::Keyframe, selected ? C_BLUE : C_TEXT);
     char id[128];
@@ -411,10 +443,14 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
     ImGui::SetCursorScreenPos({center.x - 6.0f, center.y - 7.0f});
     ImGui::InvisibleButton(id, {12.0f, 14.0f});
     if (ImGui::IsItemClicked()) {
+        s_keyMarkerClicked = true;
+        s_keyMarqueeActive = false;
         s_selectedLayer = layer.id.v;
-        s_selectedKey = {layer.id.v, property.uid, key.time, dimension};
+        const SelectedKey clicked{layer.id.v, property.uid, key.time, dimension};
+        const bool toggle = ImGui::GetIO().KeyShift;
+        selectKey(clicked, toggle);
         setCurrentTime(layer.compTime(key.time));
-        if (!layer.switches.locked) {
+        if (!layer.switches.locked && keyIsSelected(layer.id.v, property.uid, key.time, dimension, graph)) {
             s_keyDrag = {};
             s_keyDrag.layer = layer.id.v;
             s_keyDrag.property = property.uid;
@@ -462,7 +498,14 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
     if (remove) {
         Timeline::toggleKeyframe(property, key.time);
         if (!property.is_animated()) layer.syncPropsToTransform();
-        s_selectedKey = {};
+        s_selectedKeys.erase(std::remove_if(s_selectedKeys.begin(), s_selectedKeys.end(),
+            [&](const Timeline::KeyRef& selected) {
+                return selected.layer == layer.id.v && selected.property == property.uid &&
+                    selected.time == key.time;
+            }), s_selectedKeys.end());
+        s_selectedKey = s_selectedKeys.empty() ? SelectedKey{} :
+            SelectedKey{s_selectedKeys.back().layer, s_selectedKeys.back().property,
+                        s_selectedKeys.back().time, 0};
         changed = true;
     }
     if (changed) {
@@ -527,6 +570,11 @@ static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
     edited.value = std::move(value);
     property->keys.erase(keyIt);
     KeyframeModel::set_key(property->keys, edited);
+    for (Timeline::KeyRef& selected : s_selectedKeys) {
+        if (selected.layer == layer.id.v && selected.property == property->uid &&
+            selected.time == s_keyDrag.currentTime)
+            selected.time = targetLayerTime;
+    }
     s_keyDrag.currentTime = targetLayerTime;
     s_selectedKey.time = targetLayerTime;
     project->dirty = true;
@@ -1378,6 +1426,20 @@ static void drawTimeline(Project::Project* proj) {
     static BarDrag drag;
     const ImVec2 graphMin = {rp2.x, rp2.y + rulerH};
     const ImVec2 graphMax = {rp2.x + barAreaW, rp2.y + layerAreaH};
+    s_propertyRowHits.clear();
+    s_keyMarkerClicked = false;
+    if (!s_graphEditor) {
+        ImGui::SetCursorScreenPos(graphMin);
+        ImGui::InvisibleButton("##key-marquee-background", {barAreaW, layerAreaH - rulerH});
+        ImGui::SetItemAllowOverlap();
+        if (ImGui::IsItemActivated()) {
+            s_keyMarqueeActive = true;
+            s_keyMarqueeStart = ImGui::GetIO().MousePos;
+        }
+    } else {
+        s_keyMarqueeActive = false;
+    }
+    ImGui::SetCursorScreenPos(graphMin);
     double graphValueMin = std::numeric_limits<double>::infinity();
     double graphValueMax = -std::numeric_limits<double>::infinity();
     if (s_graphEditor) {
@@ -1513,6 +1575,7 @@ static void drawTimeline(Project::Project* proj) {
             if (ImGui::IsItemHovered() && (nearIn || nearOut))
                 resizeCursor = true;
             if (ImGui::IsItemClicked() && mouse.x >= inX - 4.0f && mouse.x <= outX + 4.0f) {
+                s_keyMarqueeActive = false;
                 s_selectedLayer = layer.id.v;
                 s_selectedLayers.clear();
                 s_selectedLayers.insert(layer.id.v);
@@ -1563,6 +1626,7 @@ static void drawTimeline(Project::Project* proj) {
         } else {
             trDl->AddLine({rp2.x, brp.y + ROW_H - 1.0f}, {rp2.x + barAreaW, brp.y + ROW_H - 1.0f}, C_LINE);
             Props::Property& property = *row.property;
+            s_propertyRowHits.push_back({brp.y + ROW_H * 0.5f, row.layer, property.uid});
             for (size_t ki = 0; ki < property.keys.size(); ++ki) {
                 auto& key = property.keys[ki];
                 const Project::Tick compTime = layer.compTime(key.time);
@@ -1576,6 +1640,53 @@ static void drawTimeline(Project::Project* proj) {
             drag = {};
         ImGui::SetCursorScreenPos({rp2.x, brp.y + ROW_H});
     }
+    }
+
+    if (s_keyMarqueeActive && !s_graphEditor) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const ImVec2 min{std::min(s_keyMarqueeStart.x, mouse.x),
+                         std::min(s_keyMarqueeStart.y, mouse.y)};
+        const ImVec2 max{std::max(s_keyMarqueeStart.x, mouse.x),
+                         std::max(s_keyMarqueeStart.y, mouse.y)};
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            trDl->PushClipRect(graphMin, graphMax, true);
+            trDl->AddRectFilled(min, max, IM_COL32(0, 123, 183, 40));
+            trDl->AddRect(min, max, C_BLUE);
+            trDl->PopClipRect();
+        } else if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            s_keyMarqueeActive = false;
+            if (!s_keyMarkerClicked &&
+                std::abs(max.x - min.x) + std::abs(max.y - min.y) >= 3.0f) {
+                if (!ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl && !ImGui::GetIO().KeySuper)
+                    s_selectedKeys.clear();
+                std::vector<Timeline::KeyMarker> markers;
+                for (const PropertyRowHit& hit : s_propertyRowHits) {
+                    if (hit.layer >= comp.layers.size()) continue;
+                    Project::Layer& layer = comp.layers[hit.layer];
+                    Props::Property* property = layer.props.find_mut(hit.property);
+                    if (!property) continue;
+                    for (const auto& key : property->keys) {
+                        const float x = rp2.x + static_cast<float>(
+                            (layer.compTime(key.time).seconds() - s_timelineStart) * pps);
+                        markers.push_back({layer.id.v, property->uid, key.time, x, hit.y, 9.0f});
+                    }
+                }
+                const auto hits = Timeline::keysInBox(markers, min.x, min.y, max.x, max.y);
+                for (const auto& hit : hits) {
+                    const Timeline::KeyRef selected{hit.layer, hit.property, hit.time};
+                    if (std::none_of(s_selectedKeys.begin(), s_selectedKeys.end(),
+                        [&](const Timeline::KeyRef& existing) {
+                            return existing.layer == selected.layer &&
+                                existing.property == selected.property && existing.time == selected.time;
+                        }))
+                        s_selectedKeys.push_back(selected);
+                }
+                if (!hits.empty())
+                    s_selectedKey = {hits.back().layer, hits.back().property, hits.back().time, 0};
+                else if (s_selectedKeys.empty())
+                    s_selectedKey = {};
+            }
+        }
     }
 
     updateKeyDrag(proj, comp, pps);

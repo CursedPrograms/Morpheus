@@ -1946,6 +1946,35 @@ static bool t_graph_handle_ease() {
         std::abs(limited.speed + 3.0) < 1e-9;
 }
 
+// after EffectCraft crates/ui-egui/src/panels/timeline/tests.rs a_keys_glyph_rect_is_what_it_draws and keys_in_box_walks_the_rows_and_tests_each_glyph
+static bool t_timeline_key_marquee_glyphs() {
+    const Tick one = Tick::from_seconds_f64(1.0);
+    const Tick two = Tick::from_seconds_f64(2.0);
+    const std::vector<Timeline::KeyMarker> markers{
+        {2, 20, one, 100.0f, 10.0f, 9.0f},
+        {2, 20, two, 200.0f, 10.0f, 9.0f},
+        {1, 10, one, 100.0f, 90.0f, 9.0f},
+        {1, 10, two, 200.0f, 90.0f, 9.0f},
+    };
+    const auto full = Timeline::keysInBox(markers, 0.0f, 0.0f, 300.0f, 100.0f);
+    if (full.size() != 4 || full[0].layer != 2 || full[2].layer != 1) return false;
+    const auto edge = Timeline::keysInBox(markers, 0.0f, 94.5f, 300.0f, 100.0f);
+    if (edge.size() != 2 || edge[0].layer != 1) return false;
+    const auto below = Timeline::keysInBox(markers, 0.0f, 95.1f, 300.0f, 100.0f);
+    return below.empty();
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs key_select
+static bool t_timeline_key_selection_add_and_toggle() {
+    const Timeline::KeyRef a{1, 10, Tick::from_seconds_f64(1.0)};
+    const Timeline::KeyRef b{2, 20, Tick::from_seconds_f64(2.0)};
+    std::vector<Timeline::KeyRef> selected;
+    if (!Timeline::selectKey(selected, a, false) || selected.size() != 1) return false;
+    if (!Timeline::selectKey(selected, b, true) || selected.size() != 2) return false;
+    if (Timeline::selectKey(selected, a, true) || selected.size() != 1) return false;
+    return Timeline::selectKey(selected, b, false) && selected.size() == 1;
+}
+
 static std::tuple<Proj, uint64_t, Composition> render_setup() {
     Proj p;
     p.nextId = 1;
@@ -2328,6 +2357,8 @@ void registerAll() {
     add("timeline::layer_reorder_preserves_selection_order",     t_timeline_layer_reorder_preserves_stack_order);
     add("graph::shift_locks_drag_to_dominant_axis",               t_graph_shift_axes);
     add("graph::handle_drag_sets_speed_and_influence",            t_graph_handle_ease);
+    add("timeline::key_marquee_hits_visible_glyphs_in_row_order", t_timeline_key_marquee_glyphs);
+    add("timeline::key_selection_adds_and_toggles",                t_timeline_key_selection_add_and_toggle);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);

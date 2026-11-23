@@ -48,6 +48,28 @@ struct LayerTiming {
     Project::Tick start = Project::Tick::ZERO;
 };
 
+struct KeyMarker {
+    uint64_t layer = 0;
+    uint64_t property = 0;
+    Project::Tick time = Project::Tick::ZERO;
+    float x = 0.0f;
+    float y = 0.0f;
+    float glyphSize = 9.0f;
+};
+
+struct KeyRef {
+    uint64_t layer = 0;
+    uint64_t property = 0;
+    Project::Tick time = Project::Tick::ZERO;
+};
+
+// Replace, add, or toggle a selected key reference; return whether the key remains selected.
+bool selectKey(std::vector<KeyRef>& selected, KeyRef key, bool toggle);
+
+// Return the visible key glyphs intersected by a marquee, in row/key draw order.
+std::vector<KeyRef> keysInBox(const std::vector<KeyMarker>& markers,
+                              float minX, float minY, float maxX, float maxY);
+
 // Apply a frame-quantized move or trim to a layer's composition-time range.
 LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick offset,
                             Project::Tick frameDuration, Project::Tick compDuration);

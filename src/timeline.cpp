@@ -85,11 +85,13 @@ Project::Tick timeAtPixel(double x, double x0, double start, double pps,
     return frameRate.snap_nearest(Project::Tick::from_seconds_f64(seconds));
 }
 
+// after EffectCraft crates/ui-egui/src/panels/graph.rs shift_axes
 std::pair<bool, bool> shiftAxes(bool shift, float dx, float dy) {
     if (shift) return {std::abs(dx) >= std::abs(dy), std::abs(dy) > std::abs(dx)};
     return {true, true};
 }
 
+// after EffectCraft crates/ui-egui/src/panels/graph.rs HandleGrab::ease
 KeyframeModel::Ease easeAtHandle(KeyframeModel::Ease current, double keyTime, double keyValue,
                                  double desiredTime, double desiredValue, double duration,
                                  bool out, bool speedGraph) {
@@ -101,6 +103,36 @@ KeyframeModel::Ease easeAtHandle(KeyframeModel::Ease current, double keyTime, do
         ? std::copysign(std::max(0.0, desiredValue), current.speed)
         : (desiredValue - keyValue) / offset * direction;
     return {speed, influence};
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs keys_in_box
+std::vector<KeyRef> keysInBox(const std::vector<KeyMarker>& markers,
+                              float minX, float minY, float maxX, float maxY) {
+    std::vector<KeyRef> selected;
+    if (minX > maxX || minY > maxY) return selected;
+    for (const KeyMarker& marker : markers) {
+        const float half = std::max(0.0f, marker.glyphSize) * 0.5f;
+        if (marker.x + half >= minX && marker.x - half <= maxX &&
+            marker.y + half >= minY && marker.y - half <= maxY)
+            selected.push_back({marker.layer, marker.property, marker.time});
+    }
+    return selected;
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs key_select
+bool selectKey(std::vector<KeyRef>& selected, KeyRef key, bool toggle) {
+    auto found = std::find_if(selected.begin(), selected.end(), [&](const KeyRef& item) {
+        return item.layer == key.layer && item.property == key.property && item.time == key.time;
+    });
+    if (toggle && found != selected.end()) {
+        selected.erase(found);
+        return false;
+    }
+    if (found == selected.end()) {
+        if (!toggle) selected.clear();
+        selected.push_back(key);
+    }
+    return true;
 }
 
 LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick offset,
