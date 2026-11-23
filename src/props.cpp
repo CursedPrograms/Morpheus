@@ -783,6 +783,17 @@ PropGroup shapeRound(Ids& ids, double radius) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_simple_op
+PropGroup shapeTwist(Ids& ids, double angle, std::array<double, 2> center) {
+    PropGroup group = ids.group("twist", "Twist 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("angle", "Angle", Value::Scalar(angle))
+        .with_ui(ParamUi{ParamUiKind::Angle}));
+    group.with(ids.prop("center", "Center", Value::Vec2(center))
+        .with_ui(ParamUi{ParamUiKind::Point}));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -803,6 +814,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeRepeater(ids, 3.0, {100.0, 0.0});
     if (kind == "round")
         return shapeRound(ids, 10.0);
+    if (kind == "twist")
+        return shapeTwist(ids, 0.0, {0.0, 0.0});
     return std::nullopt;
 }
 

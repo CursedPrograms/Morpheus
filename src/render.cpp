@@ -694,6 +694,98 @@ static void transformShapeSlot(ShapeSlot& slot, const Raster::Mat3& transform) {
             point = transform.apply(point);
 }
 
+// after EffectCraft crates/path/src/ops.rs twist
+static void twistShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
+                            double angleDegrees, std::array<double, 2> center,
+                            const Raster::Mat3& transform) {
+    const double angle = angleDegrees * (3.14159265358979323846 / 180.0);
+    const auto inverse = transform.inverse();
+    const Raster::Vec2 localCenter = inverse
+        ? Raster::vec2(center[0], center[1])
+        : transform.apply(Raster::vec2(center[0], center[1]));
+    const auto toLocal = [&](const Raster::Vec2& point) {
+        return inverse ? inverse->apply(point) : point;
+    };
+    const auto toWorld = [&](const Raster::Vec2& point) {
+        return inverse ? transform.apply(point) : point;
+    };
+    double maxRadius = 0.0;
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        for (const ShapeContour& path : arena[slot].paths) {
+            const auto update = [&](size_t i) {
+                if (i < path.points.size())
+                    maxRadius = std::max(maxRadius,
+                        (toLocal(path.points[i]) - localCenter).length());
+            };
+            if (path.vertices.empty()) {
+                for (size_t i = 0; i < path.points.size(); ++i) update(i);
+            } else {
+                for (size_t i : path.vertices) update(i);
+            }
+        }
+    }
+    if (angle == 0.0 || !std::isfinite(angle) || maxRadius <= 1e-9) return;
+    const double radiansPerUnit = angle / maxRadius;
+    const auto mapPoint = [&](const Raster::Vec2& point) {
+        const Raster::Vec2 vector = point - localCenter;
+        const double radius = vector.length();
+        const double theta = radiansPerUnit * radius;
+        const double cosine = std::cos(theta);
+        const double sine = std::sin(theta);
+        const Raster::Vec2 mapped = localCenter + Raster::vec2(
+            vector.x * cosine - vector.y * sine,
+            vector.x * sine + vector.y * cosine);
+        return toWorld(mapped);
+    };
+
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        for (ShapeContour& path : arena[slot].paths) {
+            const std::vector<Raster::Vec2> source = path.points;
+            const std::vector<size_t> oldVertices = path.vertices;
+            const std::vector<size_t> oldCorners = path.corners;
+            std::vector<Raster::Vec2> local;
+            local.reserve(source.size());
+            for (const Raster::Vec2& point : source) local.push_back(toLocal(point));
+            std::vector<size_t> pointMap(source.size(), 0);
+            path.points.clear();
+            if (source.empty()) continue;
+            path.points.push_back(mapPoint(local.front()));
+            for (size_t i = 1; i < source.size(); ++i) {
+                const double length = (local[i] - local[i - 1]).length();
+                const double subdivisionCount = std::ceil(
+                    (std::abs(angle) * length / maxRadius) / 0.15 + length / 50.0);
+                const size_t subdivisions = static_cast<size_t>(
+                    std::clamp(subdivisionCount, 1.0, 64.0));
+                for (size_t j = 1; j <= subdivisions; ++j) {
+                    const double t = static_cast<double>(j) / subdivisions;
+                    path.points.push_back(mapPoint(local[i - 1] +
+                        (local[i] - local[i - 1]) * t));
+                }
+                pointMap[i] = path.points.size() - 1;
+            }
+            path.vertices.clear();
+            path.corners.clear();
+            for (size_t i : oldVertices)
+                if (i < pointMap.size() &&
+                    (path.vertices.empty() || path.vertices.back() != pointMap[i]))
+                    path.vertices.push_back(pointMap[i]);
+            for (size_t i : oldCorners)
+                if (i < pointMap.size() &&
+                    (path.corners.empty() || path.corners.back() != pointMap[i]))
+                    path.corners.push_back(pointMap[i]);
+            if (std::any_of(path.points.begin(), path.points.end(), [](const Raster::Vec2& point) {
+                    return !std::isfinite(point.x) || !std::isfinite(point.y);
+                })) {
+                path.points.clear();
+                path.vertices.clear();
+                path.corners.clear();
+            }
+        }
+    }
+}
+
 static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick time,
                               const Raster::Mat3& transform, float parentOpacity,
                               std::vector<ShapeSlot>& arena, std::vector<size_t>& live,
@@ -733,6 +825,13 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
                 for (ShapeContour& path : arena[slot].paths)
                     path = roundShapeContour(path, radius);
             }
+            continue;
+        }
+
+        if (group->match_id == "twist") {
+            twistShapeSlots(arena, live,
+                shapeScalar(*group, "angle", time, 0.0),
+                shapeVec2(*group, "center", time, {0.0, 0.0}), transform);
             continue;
         }
 

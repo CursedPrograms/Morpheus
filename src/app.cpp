@@ -315,6 +315,25 @@ void script(const std::string& name) {
                 SDL_Log("script shape_round: rounded the Shape Layer Contents.");
             }
         }
+    } else if (name == "shape_twist") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto twistId = Props::Build::addShapeItem(ids, *contents, "twist");
+                Props::PropGroup* twist =
+                    twistId ? contents->find_group_mut(*twistId) : nullptr;
+                if (Props::Property* angle = twist ? twist->prop_mut("angle") : nullptr)
+                    angle->value = KeyframeModel::Value::Scalar(75.0);
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    twist ? std::vector<uint64_t>{twist->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_twist: twisted the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

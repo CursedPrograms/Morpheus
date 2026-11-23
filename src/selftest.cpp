@@ -487,7 +487,8 @@ static bool t_shape_item_builders() {
     const std::pair<const char*, const char*> supported[] = {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
         {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"},
-        {"trim", "trim"}, {"repeater", "repeater"}, {"round", "round"}
+        {"trim", "trim"}, {"repeater", "repeater"}, {"round", "round"},
+        {"twist", "twist"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -528,6 +529,13 @@ static bool t_shape_item_builders() {
             const Props::Property* radius = item->prop("radius");
             if (!radius || radius->value.as_f64() != 10.0 ||
                 radius->ui.kind != Props::ParamUiKind::Pixels)
+                return false;
+        } else if (kind == std::string("twist")) {
+            const Props::Property* angle = item->prop("angle");
+            const Props::Property* center = item->prop("center");
+            if (!angle || angle->value.as_f64() != 0.0 ||
+                angle->ui.kind != Props::ParamUiKind::Angle || !center ||
+                center->value.as_vec2() != std::array<double, 2>{0.0, 0.0})
                 return false;
         }
     }
@@ -2573,6 +2581,63 @@ static bool t_render_shape_round_corners_triangle() {
     return area < 4000.0 && area > 4000.0 - 3.0 * 15.0 * 15.0;
 }
 
+// after EffectCraft crates/path/src/ops/tests.rs twist_rotates_by_distance
+static bool t_render_shape_twist_rotates_by_distance() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+        {{0.0, 0.0}, {25.0, 0.0}}, false)));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 2.0));
+    items.push_back(Props::Build::shapeTwist(ids, 90.0, {0.0, 0.0}));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Twisted Line", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(100, 50)[3] > 0.5f && image.get(100, 75)[3] > 0.5f &&
+        image.get(109, 59)[3] > 0.5f && image.get(109, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs twist_of_centred_circle_keeps_it_round
+static bool t_render_shape_twist_circle_and_identity() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeEllipse(ids, {80.0, 80.0}, {0.0, 0.0}));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    Props::PropGroup twist = Props::Build::shapeTwist(ids, 0.0, {0.0, 0.0});
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    std::vector<Props::PropGroup> groupItems;
+    groupItems.push_back(Props::Build::shapeEllipse(ids, {80.0, 80.0}, {0.0, 0.0}));
+    groupItems.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    Props::PropGroup circle = Props::Build::shapeGroup(
+        ids, "Twisted Circle", std::move(groupItems));
+    const uint64_t circleGroupId = circle.uid;
+    contents->children.emplace_back(Props::Node(std::move(circle)));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image original = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    Props::PropGroup* shapeContents =
+        project.compositions[0].layers.back().props.group_mut("contents");
+    Props::PropGroup* circleGroup = shapeContents
+        ? shapeContents->find_group_mut(circleGroupId) : nullptr;
+    if (!circleGroup || !circleGroup->group_mut("contents")) return false;
+    Props::PropGroup* circleContents = circleGroup->group_mut("contents");
+    circleContents->children.emplace_back(Props::Node(std::move(twist)));
+    const Raster::Image identity = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    if (identity.data != original.data) return false;
+    Props::PropGroup* twistGroup = circleContents->group_mut("twist");
+    Props::Property* angle = twistGroup ? twistGroup->prop_mut("angle") : nullptr;
+    if (!angle) return false;
+    angle->value = KeyframeModel::Value::Scalar(120.0);
+    const Raster::Image twisted = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return std::abs(shapeAlphaArea(twisted) - shapeAlphaArea(original)) < 10.0;
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -2933,6 +2998,8 @@ void registerAll() {
     add("path::round_corners_clamps_to_half_segment",                 t_render_shape_round_corners_clamps);
     add("path::round_corners_keeps_smooth_and_open_ends",             t_render_shape_round_corners_smooth_and_open);
     add("path::round_corners_triangle_arc_is_tangent",                t_render_shape_round_corners_triangle);
+    add("path::twist_rotates_by_distance",                            t_render_shape_twist_rotates_by_distance);
+    add("path::twist_of_centered_circle_keeps_it_round",               t_render_shape_twist_circle_and_identity);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);
