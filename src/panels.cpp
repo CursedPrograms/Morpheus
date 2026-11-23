@@ -150,10 +150,6 @@ struct SelectedKey {
 };
 
 struct KeyDrag {
-    struct GroupKey {
-        Timeline::KeyRef ref;
-        Project::Tick currentTime = Project::Tick::ZERO;
-    };
     uint64_t layer = 0;
     Props::Uid property = 0;
     Project::Tick startTime = Project::Tick::ZERO;
@@ -166,7 +162,6 @@ struct KeyDrag {
     double graphMax = 1.0;
     float graphHeight = 1.0f;
     bool graph = false;
-    std::vector<GroupKey> keys;
 };
 struct GraphEaseDrag {
     uint64_t layer = 0;
@@ -470,17 +465,6 @@ static bool keyframeMarker(Project::Project* project, Project::Composition& comp
             s_keyDrag.graphMax = graphMax;
             s_keyDrag.graphHeight = std::max(1.0f, graphHeight);
             s_keyDrag.graph = graphValueEdit;
-            for (const Timeline::KeyRef& selected : s_selectedKeys) {
-                auto selectedLayer = std::find_if(comp.layers.begin(), comp.layers.end(),
-                    [&](const Project::Layer& candidate) { return candidate.id.v == selected.layer; });
-                if (selectedLayer == comp.layers.end() || selectedLayer->switches.locked) continue;
-                const Props::Property* selectedProperty = selectedLayer->props.find(selected.property);
-                if (!selectedProperty) continue;
-                const auto selectedFrame = std::find_if(selectedProperty->keys.begin(), selectedProperty->keys.end(),
-                    [&](const KeyframeModel::Keyframe& candidate) { return candidate.time == selected.time; });
-                if (selectedFrame != selectedProperty->keys.end())
-                    s_keyDrag.keys.push_back({selected, selected.time});
-            }
         }
     }
 
@@ -572,7 +556,6 @@ static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
     const Project::Tick compOffset = comp.frameRate.snap_nearest(
         Project::Tick::from_seconds_f64((mouseX - s_keyDrag.startX) / pixelsPerSecond));
     const Project::Tick targetCompTime = layer.compTime(s_keyDrag.startTime) + compOffset;
-    const Project::Tick targetLayerTime = layer.layerTime(targetCompTime);
     KeyframeModel::Value value = s_keyDrag.value;
     if (s_keyDrag.graph && s_keyDrag.dimension < numericDimensions(value)) {
         const double perPixel = (s_keyDrag.graphMax - s_keyDrag.graphMin) / s_keyDrag.graphHeight;
@@ -580,42 +563,22 @@ static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
         setNumericComponent(value, s_keyDrag.dimension,
             numericComponent(s_keyDrag.value, s_keyDrag.dimension) + delta);
     }
-    if (targetLayerTime == s_keyDrag.currentTime && value == keyIt->value &&
-        compOffset.v == 0) return false;
-
-    bool moved = false;
-    for (KeyDrag::GroupKey& selected : s_keyDrag.keys) {
-        auto selectedLayer = std::find_if(comp.layers.begin(), comp.layers.end(),
-            [&](const Project::Layer& candidate) { return candidate.id.v == selected.ref.layer; });
-        if (selectedLayer == comp.layers.end() || selectedLayer->switches.locked) continue;
-        Props::Property* selectedProperty = selectedLayer->props.find_mut(selected.ref.property);
-        if (!selectedProperty) continue;
-        auto selectedFrame = std::find_if(selectedProperty->keys.begin(), selectedProperty->keys.end(),
-            [&](const KeyframeModel::Keyframe& candidate) { return candidate.time == selected.currentTime; });
-        if (selectedFrame == selectedProperty->keys.end()) continue;
-        const Project::Tick newTime = selectedLayer->layerTime(
-            selectedLayer->compTime(selected.ref.time) + compOffset);
-        KeyframeModel::Value newValue = selectedFrame->value;
-        if (selected.ref.layer == s_keyDrag.layer && selected.ref.property == s_keyDrag.property &&
-            selected.ref.time == s_keyDrag.startTime)
-            newValue = value;
-        if (newTime == selected.currentTime && newValue == selectedFrame->value) continue;
-        KeyframeModel::Keyframe edited = *selectedFrame;
-        edited.time = newTime;
-        edited.value = std::move(newValue);
-        selectedProperty->keys.erase(selectedFrame);
-        KeyframeModel::set_key(selectedProperty->keys, edited);
-        for (Timeline::KeyRef& reference : s_selectedKeys) {
-            if (reference.layer == selected.ref.layer && reference.property == selected.ref.property &&
-                reference.time == selected.currentTime)
-                reference.time = newTime;
-        }
-        selected.currentTime = newTime;
-        moved = true;
+    const Timeline::KeyRef grabbed{layer.id.v, property->uid, s_keyDrag.currentTime};
+    const Project::Tick delta = targetCompTime - layer.compTime(s_keyDrag.currentTime);
+    if (delta.v == 0 && value == keyIt->value) return false;
+    Timeline::KeyMoveResult moved = Timeline::moveSelectedKeys(comp, s_selectedKeys, delta, grabbed, value);
+    s_selectedKeys = std::move(moved.selected);
+    if (moved.grabbed) {
+        s_keyDrag.currentTime = moved.grabbed->time;
+        s_selectedKey = {moved.grabbed->layer, moved.grabbed->property, moved.grabbed->time,
+                         s_keyDrag.dimension};
+    } else if (s_selectedKeys.empty()) {
+        s_keyDrag = {};
+        s_selectedKey = {};
+    } else {
+        s_selectedKey = {s_selectedKeys.back().layer, s_selectedKeys.back().property,
+                         s_selectedKeys.back().time, 0};
     }
-    if (!moved) return false;
-    s_keyDrag.currentTime = targetLayerTime;
-    s_selectedKey.time = targetLayerTime;
     project->dirty = true;
     invalidateFrameCache();
     return true;

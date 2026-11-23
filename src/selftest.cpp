@@ -2064,6 +2064,62 @@ static Layer make_solid(Proj& p, const Composition& comp, std::array<float, 3> c
     return l;
 }
 
+// after EffectCraft crates/engine/src/cmd/prop.rs move_key_refs
+static bool t_timeline_group_key_move() {
+    auto [project, compId, comp] = render_setup();
+    if (compId == 0) return false;
+    comp.duration = Tick::from_seconds_f64(8.0);
+    auto moving = make_solid(project, comp, {1.0f, 0.0f, 0.0f}, 20, 20);
+    moving.stretch = 200.0;
+    auto* position = moving.props.prop_mut("transform/position");
+    if (!position) return false;
+    const Tick first = Tick::from_seconds_f64(0.5);
+    const Tick second = Tick::from_seconds_f64(1.5);
+    const Tick collision = Tick::from_seconds_f64(1.0);
+    position->keys = {
+        KeyframeModel::Keyframe(first, KeyframeModel::Value::Vec3(10.0, 20.0, 0.0)),
+        KeyframeModel::Keyframe(collision, KeyframeModel::Value::Vec3(90.0, 90.0, 0.0)),
+        KeyframeModel::Keyframe(second, KeyframeModel::Value::Vec3(30.0, 40.0, 0.0))
+    };
+    const uint64_t movingId = moving.id.v;
+    const Props::Uid positionId = position->uid;
+
+    auto locked = make_solid(project, comp, {0.0f, 1.0f, 0.0f}, 20, 20);
+    locked.switches.locked = true;
+    auto* opacity = locked.props.prop_mut("transform/opacity");
+    if (!opacity) return false;
+    opacity->keys = {KeyframeModel::Keyframe(first, KeyframeModel::Value::Scalar(75.0))};
+    const uint64_t lockedId = locked.id.v;
+    const Props::Uid opacityId = opacity->uid;
+
+    comp.layers.push_back(std::move(moving));
+    comp.layers.push_back(std::move(locked));
+    const std::vector<Timeline::KeyRef> selected{
+        {movingId, positionId, second},
+        {lockedId, opacityId, first},
+        {movingId, positionId, first}
+    };
+    const Timeline::KeyRef grabbed{movingId, positionId, first};
+    const Timeline::KeyMoveResult moved = Timeline::moveSelectedKeys(
+        comp, selected, Tick::from_seconds_f64(1.0), grabbed,
+        KeyframeModel::Value::Vec3(42.0, 52.0, 0.0));
+    if (moved.selected.size() != selected.size() || !moved.grabbed) return false;
+    if (moved.selected[0].time != Tick::from_seconds_f64(2.0) ||
+        moved.selected[1].layer != lockedId || moved.selected[1].time != first ||
+        moved.selected[2].time != Tick::from_seconds_f64(1.0) ||
+        moved.grabbed->time != Tick::from_seconds_f64(1.0)) return false;
+    const Props::Property* movedPosition = comp.layers[0].props.find(positionId);
+    if (!movedPosition || movedPosition->keys.size() != 2) return false;
+    const auto target = std::find_if(movedPosition->keys.begin(), movedPosition->keys.end(),
+        [&](const KeyframeModel::Keyframe& key) { return key.time == Tick::from_seconds_f64(1.0); });
+    if (target == movedPosition->keys.end() ||
+        target->value != KeyframeModel::Value::Vec3(42.0, 52.0, 0.0)) return false;
+    const Props::Property* lockedOpacity = comp.layers[1].props.find(opacityId);
+    return lockedOpacity && lockedOpacity->keys.size() == 1 &&
+        lockedOpacity->keys.front().time == first &&
+        lockedOpacity->keys.front().value == KeyframeModel::Value::Scalar(75.0);
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -2406,6 +2462,7 @@ void registerAll() {
     add("graph::handle_drag_sets_speed_and_influence",            t_graph_handle_ease);
     add("timeline::key_marquee_hits_visible_glyphs_in_row_order", t_timeline_key_marquee_glyphs);
     add("timeline::key_selection_adds_and_toggles",                t_timeline_key_selection_add_and_toggle);
+    add("timeline::group_key_move_preserves_selection_and_locks",   t_timeline_group_key_move);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);

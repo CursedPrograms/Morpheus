@@ -10,6 +10,10 @@
 #include <utility>
 #include <vector>
 
+namespace Project {
+struct Composition;
+}
+
 namespace Timeline {
 
 // Pixels per second that fit the composition in the time graph.
@@ -65,6 +69,17 @@ struct KeyRef {
     uint64_t property = 0;
     Project::Tick time = Project::Tick::ZERO;
 };
+
+struct KeyMoveResult {
+    std::vector<KeyRef> selected;
+    std::optional<KeyRef> grabbed;
+};
+
+// Move selected keyframes by a composition-time delta; locked keys remain selected.
+KeyMoveResult moveSelectedKeys(Project::Composition& comp,
+                               const std::vector<KeyRef>& selected,
+                               Project::Tick compDelta, KeyRef grabbed,
+                               const std::optional<KeyframeModel::Value>& replacement = std::nullopt);
 
 // Replace, add, or toggle a selected key reference; return whether the key remains selected.
 bool selectKey(std::vector<KeyRef>& selected, KeyRef key, bool toggle);

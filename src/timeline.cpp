@@ -1,10 +1,13 @@
 // Timeline time mapping and interaction math.
 // after EffectCraft (crates/ui-egui/src/panels/timeline.rs TMap, fit_pps, set_zoom)
 #include "timeline.h"
+#include "project.h"
 
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <map>
+#include <unordered_map>
 
 namespace Timeline {
 
@@ -126,6 +129,101 @@ std::vector<KeyRef> keysInBox(const std::vector<KeyMarker>& markers,
             selected.push_back({marker.layer, marker.property, marker.time});
     }
     return selected;
+}
+
+// after EffectCraft crates/engine/src/cmd/prop.rs move_key_refs
+KeyMoveResult moveSelectedKeys(Project::Composition& comp,
+                               const std::vector<KeyRef>& selected,
+                               Project::Tick compDelta, KeyRef grabbed,
+                               const std::optional<KeyframeModel::Value>& replacement) {
+    struct Move {
+        KeyRef source;
+        Project::Tick target;
+        KeyframeModel::Keyframe key;
+        size_t selectionIndex = 0;
+    };
+    using Group = std::pair<uint64_t, Props::Uid>;
+    std::map<Group, std::vector<Move>> grouped;
+    std::unordered_map<size_t, KeyRef> remapped;
+    std::vector<KeyRef> unique;
+    for (const KeyRef& ref : selected) {
+        if (std::find_if(unique.begin(), unique.end(), [&](const KeyRef& old) {
+                return old.layer == ref.layer && old.property == ref.property && old.time == ref.time;
+            }) != unique.end())
+            continue;
+        unique.push_back(ref);
+
+        auto layer = std::find_if(comp.layers.begin(), comp.layers.end(),
+            [&](const Project::Layer& candidate) { return candidate.id.v == ref.layer; });
+        if (layer == comp.layers.end()) continue;
+        Props::Property* property = layer->props.find_mut(ref.property);
+        if (!property) continue;
+        auto key = std::find_if(property->keys.begin(), property->keys.end(),
+            [&](const KeyframeModel::Keyframe& candidate) { return candidate.time == ref.time; });
+        if (key == property->keys.end()) continue;
+        if (layer->switches.locked) {
+            remapped.emplace(unique.size() - 1, ref);
+            continue;
+        }
+        const Project::Tick target = layer->layerTime(layer->compTime(ref.time) + compDelta);
+        grouped[{ref.layer, ref.property}].push_back({ref, target, *key, unique.size() - 1});
+    }
+
+    for (auto& [group, moves] : grouped) {
+        auto layer = std::find_if(comp.layers.begin(), comp.layers.end(),
+            [&](const Project::Layer& candidate) { return candidate.id.v == group.first; });
+        if (layer == comp.layers.end()) continue;
+        Props::Property* property = layer->props.find_mut(group.second);
+        if (!property) continue;
+
+        for (const Move& move : moves) {
+            property->keys.erase(std::remove_if(property->keys.begin(), property->keys.end(),
+                [&](const KeyframeModel::Keyframe& key) { return key.time == move.source.time; }),
+                property->keys.end());
+        }
+
+        std::unordered_map<int64_t, size_t> targetOwners;
+        for (size_t moveIndex = 0; moveIndex < moves.size(); ++moveIndex) {
+            Move& move = moves[moveIndex];
+            move.key.time = move.target;
+            if (replacement && move.source.layer == grabbed.layer &&
+                move.source.property == grabbed.property && move.source.time == grabbed.time)
+                move.key.value = *replacement;
+            KeyframeModel::set_key(property->keys, std::move(move.key));
+            targetOwners[move.target.v] = moveIndex;
+        }
+
+        std::unordered_map<size_t, size_t> sourceAtIndex;
+        for (const auto& [targetTicks, owner] : targetOwners) {
+            auto key = std::find_if(property->keys.begin(), property->keys.end(),
+                [&](const KeyframeModel::Keyframe& candidate) { return candidate.time.v == targetTicks; });
+            if (key != property->keys.end())
+                sourceAtIndex.emplace(owner, static_cast<size_t>(key - property->keys.begin()));
+        }
+        KeyframeModel::retime_roving(property->keys, property->spatial);
+        for (const auto& [owner, index] : sourceAtIndex) {
+            if (index >= property->keys.size()) continue;
+            const Move& move = moves[owner];
+            remapped.emplace(move.selectionIndex,
+                KeyRef{move.source.layer, move.source.property, property->keys[index].time});
+        }
+    }
+
+    KeyMoveResult result;
+    for (size_t i = 0; i < unique.size(); ++i) {
+        const auto mapped = remapped.find(i);
+        if (mapped == remapped.end()) continue;
+        const KeyRef& ref = mapped->second;
+        if (unique[i].layer == grabbed.layer && unique[i].property == grabbed.property &&
+            unique[i].time == grabbed.time)
+            result.grabbed = ref;
+        if (std::none_of(result.selected.begin(), result.selected.end(), [&](const KeyRef& existing) {
+                return existing.layer == ref.layer && existing.property == ref.property &&
+                    existing.time == ref.time;
+            }))
+            result.selected.push_back(ref);
+    }
+    return result;
 }
 
 // after EffectCraft crates/ui-egui/src/panels/timeline.rs key_select
