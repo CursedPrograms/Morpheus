@@ -150,6 +150,10 @@ struct SelectedKey {
 };
 
 struct KeyDrag {
+    struct GroupKey {
+        Timeline::KeyRef ref;
+        Project::Tick currentTime = Project::Tick::ZERO;
+    };
     uint64_t layer = 0;
     Props::Uid property = 0;
     Project::Tick startTime = Project::Tick::ZERO;
@@ -162,6 +166,7 @@ struct KeyDrag {
     double graphMax = 1.0;
     float graphHeight = 1.0f;
     bool graph = false;
+    std::vector<GroupKey> keys;
 };
 struct GraphEaseDrag {
     uint64_t layer = 0;
@@ -428,7 +433,8 @@ static void graphEaseHandle(Project::Project* project, Project::Layer& layer,
 }
 
 // Draw a keyframe and start a frame-quantized drag without changing its selection identity.
-static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Props::Property& property,
+static bool keyframeMarker(Project::Project* project, Project::Composition& comp,
+                           Project::Layer& layer, Props::Property& property,
                            KeyframeModel::Keyframe& key, size_t keyIndex,
                            size_t dimension, ImDrawList* drawList, ImVec2 center,
                            bool graph, bool graphValueEdit,
@@ -464,6 +470,17 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
             s_keyDrag.graphMax = graphMax;
             s_keyDrag.graphHeight = std::max(1.0f, graphHeight);
             s_keyDrag.graph = graphValueEdit;
+            for (const Timeline::KeyRef& selected : s_selectedKeys) {
+                auto selectedLayer = std::find_if(comp.layers.begin(), comp.layers.end(),
+                    [&](const Project::Layer& candidate) { return candidate.id.v == selected.layer; });
+                if (selectedLayer == comp.layers.end() || selectedLayer->switches.locked) continue;
+                const Props::Property* selectedProperty = selectedLayer->props.find(selected.property);
+                if (!selectedProperty) continue;
+                const auto selectedFrame = std::find_if(selectedProperty->keys.begin(), selectedProperty->keys.end(),
+                    [&](const KeyframeModel::Keyframe& candidate) { return candidate.time == selected.time; });
+                if (selectedFrame != selectedProperty->keys.end())
+                    s_keyDrag.keys.push_back({selected, selected.time});
+            }
         }
     }
 
@@ -563,18 +580,40 @@ static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
         setNumericComponent(value, s_keyDrag.dimension,
             numericComponent(s_keyDrag.value, s_keyDrag.dimension) + delta);
     }
-    if (targetLayerTime == s_keyDrag.currentTime && value == keyIt->value) return false;
+    if (targetLayerTime == s_keyDrag.currentTime && value == keyIt->value &&
+        compOffset.v == 0) return false;
 
-    KeyframeModel::Keyframe edited = *keyIt;
-    edited.time = targetLayerTime;
-    edited.value = std::move(value);
-    property->keys.erase(keyIt);
-    KeyframeModel::set_key(property->keys, edited);
-    for (Timeline::KeyRef& selected : s_selectedKeys) {
-        if (selected.layer == layer.id.v && selected.property == property->uid &&
-            selected.time == s_keyDrag.currentTime)
-            selected.time = targetLayerTime;
+    bool moved = false;
+    for (KeyDrag::GroupKey& selected : s_keyDrag.keys) {
+        auto selectedLayer = std::find_if(comp.layers.begin(), comp.layers.end(),
+            [&](const Project::Layer& candidate) { return candidate.id.v == selected.ref.layer; });
+        if (selectedLayer == comp.layers.end() || selectedLayer->switches.locked) continue;
+        Props::Property* selectedProperty = selectedLayer->props.find_mut(selected.ref.property);
+        if (!selectedProperty) continue;
+        auto selectedFrame = std::find_if(selectedProperty->keys.begin(), selectedProperty->keys.end(),
+            [&](const KeyframeModel::Keyframe& candidate) { return candidate.time == selected.currentTime; });
+        if (selectedFrame == selectedProperty->keys.end()) continue;
+        const Project::Tick newTime = selectedLayer->layerTime(
+            selectedLayer->compTime(selected.ref.time) + compOffset);
+        KeyframeModel::Value newValue = selectedFrame->value;
+        if (selected.ref.layer == s_keyDrag.layer && selected.ref.property == s_keyDrag.property &&
+            selected.ref.time == s_keyDrag.startTime)
+            newValue = value;
+        if (newTime == selected.currentTime && newValue == selectedFrame->value) continue;
+        KeyframeModel::Keyframe edited = *selectedFrame;
+        edited.time = newTime;
+        edited.value = std::move(newValue);
+        selectedProperty->keys.erase(selectedFrame);
+        KeyframeModel::set_key(selectedProperty->keys, edited);
+        for (Timeline::KeyRef& reference : s_selectedKeys) {
+            if (reference.layer == selected.ref.layer && reference.property == selected.ref.property &&
+                reference.time == selected.currentTime)
+                reference.time = newTime;
+        }
+        selected.currentTime = newTime;
+        moved = true;
     }
+    if (!moved) return false;
     s_keyDrag.currentTime = targetLayerTime;
     s_selectedKey.time = targetLayerTime;
     project->dirty = true;
@@ -1534,7 +1573,7 @@ static void drawTimeline(Project::Project* proj) {
                         for (bool out : {false, true})
                             graphEaseHandle(proj, layer, property, ki, dimension, out, trDl,
                                             graphMin, graphMax, graphValueMin, graphValueMax, pps);
-                        keyframeMarker(proj, layer, property, key, ki, dimension, trDl,
+                        keyframeMarker(proj, comp, layer, property, key, ki, dimension, trDl,
                                        {x, y}, true, !s_graphSpeed, graphValueMin, graphValueMax,
                                        graphMax.y - graphMin.y);
                     }
@@ -1632,7 +1671,7 @@ static void drawTimeline(Project::Project* proj) {
                 const Project::Tick compTime = layer.compTime(key.time);
                 const float x = rp2.x + static_cast<float>((compTime.seconds() - s_timelineStart) * pps);
                 if (x < rp2.x - 8.0f || x > rp2.x + barAreaW + 8.0f) continue;
-                keyframeMarker(proj, layer, property, key, ki, 0, trDl,
+                keyframeMarker(proj, comp, layer, property, key, ki, 0, trDl,
                                {x, brp.y + ROW_H * 0.5f}, false, false, 0.0, 1.0, ROW_H);
             }
         }
