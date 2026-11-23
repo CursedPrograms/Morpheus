@@ -487,7 +487,7 @@ static bool t_shape_item_builders() {
     const std::pair<const char*, const char*> supported[] = {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
         {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"},
-        {"trim", "trim"}, {"repeater", "repeater"}
+        {"trim", "trim"}, {"repeater", "repeater"}, {"round", "round"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -523,6 +523,11 @@ static bool t_shape_item_builders() {
             if (!copies || copies->value.as_f64() != 3.0 || !composite ||
                 composite->ui.options != std::vector<std::string>{"Below", "Above"} ||
                 !position || position->value.as_vec2() != std::array<double, 2>{100.0, 0.0})
+                return false;
+        } else if (kind == std::string("round")) {
+            const Props::Property* radius = item->prop("radius");
+            if (!radius || radius->value.as_f64() != 10.0 ||
+                radius->ui.kind != Props::ParamUiKind::Pixels)
                 return false;
         }
     }
@@ -2456,6 +2461,118 @@ static bool t_render_shape_repeater_stays_in_group() {
         image.get(90, 50)[3] < 0.01f;
 }
 
+static double shapeAlphaArea(const Raster::Image& image) {
+    double area = 0.0;
+    for (const Raster::Px& pixel : image.data) area += pixel[3];
+    return area;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs round_corners_square
+static bool t_render_shape_round_corners_square() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {100.0, 100.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    items.push_back(Props::Build::shapeRound(ids, 10.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Rounded Square", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const double expected = 10000.0 - (4.0 - 3.14159265358979323846) * 100.0;
+    return std::abs(shapeAlphaArea(image) - expected) < 18.0 &&
+        image.get(50, 0)[3] < 0.01f && image.get(56, 5)[3] > 0.5f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs round_corners_clamps_to_half_segment
+static bool t_render_shape_round_corners_clamps() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {20.0, 20.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    items.push_back(Props::Build::shapeRound(ids, 100.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Clamped Round", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return std::abs(shapeAlphaArea(image) - 3.14159265358979323846 * 100.0) < 10.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs round_corners_keeps_smooth_and_open_ends
+static bool t_render_shape_round_corners_smooth_and_open() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeEllipse(ids, {80.0, 80.0}, {0.0, 0.0}));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    Props::PropGroup rounded = Props::Build::shapeRound(ids, 10.0);
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    Props::PropGroup ellipseGroup =
+        Props::Build::shapeGroup(ids, "Smooth Ellipse", std::move(items));
+    const uint64_t ellipseGroupId = ellipseGroup.uid;
+    contents->children.emplace_back(Props::Node(std::move(ellipseGroup)));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image original = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    Props::PropGroup* shapeContents =
+        project.compositions[0].layers.back().props.group_mut("contents");
+    Props::PropGroup* ellipse = shapeContents
+        ? shapeContents->find_group_mut(ellipseGroupId) : nullptr;
+    if (!ellipse || !ellipse->group_mut("contents")) return false;
+    ellipse->group_mut("contents")->children.emplace_back(Props::Node(std::move(rounded)));
+    const Raster::Image roundedEllipse = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    if (original.data.size() != roundedEllipse.data.size()) return false;
+    for (size_t i = 0; i < original.data.size(); ++i)
+        if (std::abs(original.data[i][3] - roundedEllipse.data[i][3]) > 1e-6f)
+            return false;
+
+    auto [openProject, openCompId, openComp] = render_setup();
+    Layer openLayer = make_shape_layer(openProject, openComp);
+    Props::Ids openIds(&openProject.nextId);
+    std::vector<Props::PropGroup> openItems;
+    openItems.push_back(Props::Build::shapePath(openIds, KeyframeModel::ShapePath::polygon(
+        {{-40.0, 0.0}, {0.0, 0.0}, {0.0, 40.0}}, false)));
+    openItems.push_back(Props::Build::shapeStroke(openIds, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    openItems.push_back(Props::Build::shapeRound(openIds, 20.0));
+    Props::PropGroup* openContents = openLayer.props.group_mut("contents");
+    if (!openContents) return false;
+    openContents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(openIds, "Open Path", std::move(openItems))));
+    openProject.compositions[0].layers.push_back(std::move(openLayer));
+    const Raster::Image openImage =
+        Render::render_frame(&openProject, openCompId, Tick::ZERO, 1.0);
+    return openImage.get(60, 50)[3] > 0.5f && openImage.get(100, 90)[3] > 0.5f &&
+        openImage.get(99, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs round_corners_triangle_arc_is_tangent
+static bool t_render_shape_round_corners_triangle() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+        {{-50.0, -40.0}, {50.0, -40.0}, {0.0, 40.0}}, true)));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    items.push_back(Props::Build::shapeRound(ids, 15.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Rounded Triangle", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const double area = shapeAlphaArea(image);
+    return area < 4000.0 && area > 4000.0 - 3.0 * 15.0 * 15.0;
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -2812,6 +2929,10 @@ void registerAll() {
     add("shape::repeater_duplicates_paints",                         t_render_shape_repeater_duplicates_paints);
     add("shape::repeater_fractional_copy_opacity",                   t_render_shape_repeater_fractional_opacity);
     add("shape::repeater_stays_in_group",                             t_render_shape_repeater_stays_in_group);
+    add("path::round_corners_square",                                 t_render_shape_round_corners_square);
+    add("path::round_corners_clamps_to_half_segment",                 t_render_shape_round_corners_clamps);
+    add("path::round_corners_keeps_smooth_and_open_ends",             t_render_shape_round_corners_smooth_and_open);
+    add("path::round_corners_triangle_arc_is_tangent",                t_render_shape_round_corners_triangle);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);

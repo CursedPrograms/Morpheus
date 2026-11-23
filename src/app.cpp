@@ -296,6 +296,25 @@ void script(const std::string& name) {
                 SDL_Log("script shape_repeater: repeated the Shape Layer Contents.");
             }
         }
+    } else if (name == "shape_round") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto roundId = Props::Build::addShapeItem(ids, *contents, "round");
+                Props::PropGroup* round =
+                    roundId ? contents->find_group_mut(*roundId) : nullptr;
+                if (Props::Property* radius = round ? round->prop_mut("radius") : nullptr)
+                    radius->value = KeyframeModel::Value::Scalar(28.0);
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    round ? std::vector<uint64_t>{round->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_round: rounded the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

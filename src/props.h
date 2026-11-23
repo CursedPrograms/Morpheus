@@ -353,6 +353,7 @@ PropGroup shapeFill(Ids& ids, std::array<double, 4> color);
 PropGroup shapeStroke(Ids& ids, std::array<double, 4> color, double width);
 PropGroup shapeTrim(Ids& ids, double start, double end, double offset);
 PropGroup shapeRepeater(Ids& ids, double copies, std::array<double, 2> offsetPosition);
+PropGroup shapeRound(Ids& ids, double radius);
 PropGroup shapeStrokeTaper(Ids& ids);
 PropGroup shapeStrokeWave(Ids& ids);
 PropGroup path_options(Ids& ids);

@@ -190,6 +190,8 @@ namespace {
 
 struct ShapeContour {
     std::vector<Raster::Vec2> points;
+    std::vector<size_t> vertices;
+    std::vector<size_t> corners;
     bool closed = false;
 };
 
@@ -284,6 +286,7 @@ static ShapeContour flattenShapePath(const KeyframeModel::ShapePath& path,
         return transform.apply_vec(Raster::vec2(value[0], value[1]));
     };
     contour.points.push_back(point(0));
+    std::vector<size_t> pointAtVertex(count, 0);
     const size_t segmentCount = path.closed ? count : count - 1;
     for (size_t i = 0; i < segmentCount; ++i) {
         const size_t next = (i + 1) % count;
@@ -295,11 +298,51 @@ static ShapeContour flattenShapePath(const KeyframeModel::ShapePath& path,
             flattenShapeCubic(start, start + out, end + in, end, contour.points);
         else
             contour.points.push_back(end);
+        if (next != 0) pointAtVertex[next] = contour.points.size() - 1;
+    }
+
+    std::vector<size_t> canonical;
+    for (size_t i = 0; i < count; ++i) {
+        if (canonical.empty() ||
+            (point(i) - point(canonical.back())).length() > 1e-9) {
+            canonical.push_back(i);
+        } else {
+            canonical.back() = i;
+        }
+    }
+    if (path.closed && canonical.size() > 1 &&
+        (point(canonical.front()) - point(canonical.back())).length() <= 1e-9)
+        canonical.pop_back();
+    for (size_t i : canonical)
+        contour.vertices.push_back(i == 0 ? 0 : pointAtVertex[i]);
+
+    for (size_t i = 0; i < canonical.size(); ++i) {
+        if (!path.closed && (i == 0 || i + 1 == canonical.size())) continue;
+        const size_t vertex = canonical[i];
+        const size_t previous = canonical[(i + canonical.size() - 1) % canonical.size()];
+        const size_t next = canonical[(i + 1) % canonical.size()];
+        const Raster::Vec2 currentPoint = point(vertex);
+        Raster::Vec2 incoming = vertex < path.in_tangents.size()
+            ? tangent(path.in_tangents, vertex) * -1.0
+            : Raster::Vec2::ZERO;
+        Raster::Vec2 outgoing = vertex < path.out_tangents.size()
+            ? tangent(path.out_tangents, vertex)
+            : Raster::Vec2::ZERO;
+        if (incoming.length() <= 1e-9) incoming = currentPoint - point(previous);
+        if (outgoing.length() <= 1e-9) outgoing = point(next) - currentPoint;
+        const double turn = std::abs(std::atan2(
+            incoming.x * outgoing.y - incoming.y * outgoing.x,
+            incoming.x * outgoing.x + incoming.y * outgoing.y));
+        if (turn > 1e-3 && turn < 3.14159265358979323846 - 1e-3)
+            contour.corners.push_back(vertex == 0 ? 0 : pointAtVertex[vertex]);
     }
     if (std::any_of(contour.points.begin(), contour.points.end(), [](const Raster::Vec2& point) {
             return !std::isfinite(point.x) || !std::isfinite(point.y);
-        }))
+        })) {
         contour.points.clear();
+        contour.vertices.clear();
+        contour.corners.clear();
+    }
     return contour;
 }
 
@@ -406,32 +449,192 @@ static std::vector<ShapeContour> trimShapePaths(
     const std::vector<ShapeContour>& paths,
     const std::vector<std::pair<double, double>>& ranges) {
     std::vector<ShapeContour> result;
-    double pathBase = 0.0;
-    for (const ShapeContour& path : paths) {
-        double segmentBase = pathBase;
-        for (size_t i = 1; i < path.points.size(); ++i) {
-            const Raster::Vec2 a = path.points[i - 1];
-            const Raster::Vec2 b = path.points[i];
-            const double segmentLength = (b - a).length();
-            if (segmentLength <= 1e-12) continue;
-            const double segmentEnd = segmentBase + segmentLength;
-            for (const auto& range : ranges) {
+    const auto contains = [](const std::vector<size_t>& indices, size_t index) {
+        return std::find(indices.begin(), indices.end(), index) != indices.end();
+    };
+    const auto markVertex = [](ShapeContour& contour, bool vertex, bool corner) {
+        if (contour.points.empty()) return;
+        const size_t index = contour.points.size() - 1;
+        if (vertex && (contour.vertices.empty() || contour.vertices.back() != index))
+            contour.vertices.push_back(index);
+        if (corner && (contour.corners.empty() || contour.corners.back() != index))
+            contour.corners.push_back(index);
+    };
+    for (const auto& range : ranges) {
+        double pathBase = 0.0;
+        for (const ShapeContour& path : paths) {
+            double segmentBase = pathBase;
+            for (size_t i = 1; i < path.points.size(); ++i) {
+                const Raster::Vec2 a = path.points[i - 1];
+                const Raster::Vec2 b = path.points[i];
+                const double segmentLength = (b - a).length();
+                if (segmentLength <= 1e-12) continue;
+                const double segmentEnd = segmentBase + segmentLength;
                 const double from = std::max(segmentBase, range.first);
                 const double to = std::min(segmentEnd, range.second);
-                if (to <= from) continue;
-                const Raster::Vec2 p0 = a + (b - a) * ((from - segmentBase) / segmentLength);
-                const Raster::Vec2 p1 = a + (b - a) * ((to - segmentBase) / segmentLength);
-                if (result.empty() || result.back().points.empty() ||
-                    (result.back().points.back() - p0).length() > 1e-6)
-                    result.push_back({{p0}, false});
-                if ((result.back().points.back() - p1).length() > 1e-9)
-                    result.back().points.push_back(p1);
+                if (to > from) {
+                    const Raster::Vec2 p0 = a + (b - a) * ((from - segmentBase) / segmentLength);
+                    const Raster::Vec2 p1 = a + (b - a) * ((to - segmentBase) / segmentLength);
+                    const bool startsAtSourceVertex =
+                        std::abs(from - segmentBase) <= 1e-8 &&
+                        contains(path.vertices, i - 1);
+                    const bool endsAtSourceVertex = std::abs(to - segmentEnd) <= 1e-8 &&
+                        (contains(path.vertices, i) ||
+                         (path.closed && i + 1 == path.points.size() &&
+                          contains(path.vertices, 0)));
+                    const bool startsAtVertex = startsAtSourceVertex ||
+                        std::abs(from - range.first) <= 1e-8;
+                    const bool endsAtVertex = endsAtSourceVertex ||
+                        std::abs(to - range.second) <= 1e-8;
+                    const bool startsAtCorner = startsAtSourceVertex &&
+                        contains(path.corners, i - 1);
+                    const bool endsAtCorner = endsAtSourceVertex &&
+                        (contains(path.corners, i) ||
+                         (path.closed && i + 1 == path.points.size() &&
+                          contains(path.corners, 0)));
+                    if (result.empty() || result.back().points.empty() ||
+                        (result.back().points.back() - p0).length() > 1e-6)
+                        result.push_back(ShapeContour{{p0}, {}, {}, false});
+                    markVertex(result.back(), startsAtVertex, startsAtCorner);
+                    if ((result.back().points.back() - p1).length() > 1e-9)
+                        result.back().points.push_back(p1);
+                    markVertex(result.back(), endsAtVertex, endsAtCorner);
+                }
+                segmentBase = segmentEnd;
             }
-            segmentBase = segmentEnd;
+            pathBase += shapeContourLength(path);
         }
-        pathBase += shapeContourLength(path);
     }
     return result;
+}
+
+static double shapePolylineLength(const ShapeContour& path, size_t start, size_t end) {
+    double length = 0.0;
+    for (size_t i = start + 1; i <= end; ++i)
+        length += (path.points[i] - path.points[i - 1]).length();
+    return length;
+}
+
+static Raster::Vec2 shapePolylinePointAt(
+    const ShapeContour& path, size_t start, size_t end, double distance) {
+    double traversed = 0.0;
+    for (size_t i = start + 1; i <= end; ++i) {
+        const Raster::Vec2 a = path.points[i - 1];
+        const Raster::Vec2 b = path.points[i];
+        const double segment = (b - a).length();
+        if (segment > 1e-12 && traversed + segment >= distance)
+            return a + (b - a) * std::clamp((distance - traversed) / segment, 0.0, 1.0);
+        traversed += segment;
+    }
+    return path.points[end];
+}
+
+static std::vector<Raster::Vec2> shapePolylineSlice(
+    const ShapeContour& path, size_t start, size_t end, double from, double to) {
+    std::vector<Raster::Vec2> points{
+        shapePolylinePointAt(path, start, end, from)
+    };
+    double traversed = 0.0;
+    for (size_t i = start + 1; i <= end; ++i) {
+        traversed += (path.points[i] - path.points[i - 1]).length();
+        if (traversed > from + 1e-9 && traversed < to - 1e-9)
+            points.push_back(path.points[i]);
+    }
+    const Raster::Vec2 last = shapePolylinePointAt(path, start, end, to);
+    if ((points.back() - last).length() > 1e-9) points.push_back(last);
+    return points;
+}
+
+static void appendShapePoints(std::vector<Raster::Vec2>& target,
+                              const std::vector<Raster::Vec2>& points) {
+    for (const Raster::Vec2& point : points)
+        if (target.empty() || (target.back() - point).length() > 1e-9)
+            target.push_back(point);
+}
+
+// after EffectCraft crates/path/src/ops.rs round_corners
+static ShapeContour roundShapeContour(const ShapeContour& path, double radius) {
+    const size_t vertexCount = path.vertices.size();
+    const size_t segmentCount = path.closed ? vertexCount :
+        (vertexCount == 0 ? 0 : vertexCount - 1);
+    if (radius <= 0.0 || !std::isfinite(radius) || segmentCount == 0 ||
+        path.corners.empty())
+        return path;
+
+    std::vector<double> cuts(vertexCount, 0.0);
+    std::vector<Raster::Vec2> incoming(vertexCount, Raster::Vec2::ZERO);
+    std::vector<Raster::Vec2> outgoing(vertexCount, Raster::Vec2::ZERO);
+    std::vector<double> turns(vertexCount, 0.0);
+    const auto segmentStart = [&](size_t i) { return path.vertices[i]; };
+    const auto segmentEnd = [&](size_t i) {
+        return i + 1 < vertexCount ? path.vertices[i + 1] : path.points.size() - 1;
+    };
+    const auto endTangent = [&](size_t i) {
+        const size_t end = segmentEnd(i);
+        for (size_t p = end; p > segmentStart(i); --p) {
+            const Raster::Vec2 tangent = path.points[p] - path.points[p - 1];
+            if (tangent.length() > 1e-9) return tangent * (1.0 / tangent.length());
+        }
+        return Raster::Vec2::ZERO;
+    };
+    const auto startTangent = [&](size_t i) {
+        const size_t start = segmentStart(i);
+        const size_t end = segmentEnd(i);
+        for (size_t p = start + 1; p <= end; ++p) {
+            const Raster::Vec2 tangent = path.points[p] - path.points[p - 1];
+            if (tangent.length() > 1e-9) return tangent * (1.0 / tangent.length());
+        }
+        return Raster::Vec2::ZERO;
+    };
+
+    for (size_t i = 0; i < vertexCount; ++i) {
+        if (!path.closed && (i == 0 || i + 1 == vertexCount)) continue;
+        if (std::find(path.corners.begin(), path.corners.end(), path.vertices[i]) ==
+            path.corners.end())
+            continue;
+        const size_t previous = (i + vertexCount - 1) % vertexCount;
+        const size_t next = i;
+        incoming[i] = endTangent(previous);
+        outgoing[i] = startTangent(next);
+        const double dot = incoming[i].x * outgoing[i].x +
+            incoming[i].y * outgoing[i].y;
+        const double cross = incoming[i].x * outgoing[i].y -
+            incoming[i].y * outgoing[i].x;
+        turns[i] = std::abs(std::atan2(cross, dot));
+        if (turns[i] <= 1e-3 || turns[i] >= 3.14159265358979323846 - 1e-3)
+            continue;
+        const double previousLength = shapePolylineLength(
+            path, segmentStart(previous), segmentEnd(previous));
+        const double nextLength = shapePolylineLength(
+            path, segmentStart(next), segmentEnd(next));
+        cuts[i] = std::min({radius, previousLength * 0.5, nextLength * 0.5});
+    }
+
+    ShapeContour rounded;
+    rounded.closed = path.closed;
+    for (size_t i = 0; i < segmentCount; ++i) {
+        const size_t next = (i + 1) % vertexCount;
+        const size_t start = segmentStart(i);
+        const size_t end = segmentEnd(i);
+        const double length = shapePolylineLength(path, start, end);
+        const double from = cuts[i];
+        const double to = std::max(from, length - cuts[next]);
+        appendShapePoints(rounded.points, shapePolylineSlice(path, start, end, from, to));
+        if (cuts[next] <= 0.0) continue;
+
+        const Raster::Vec2 corner = path.points[path.vertices[next]];
+        const Raster::Vec2 p = corner - incoming[next] * cuts[next];
+        const Raster::Vec2 q = corner + outgoing[next] * cuts[next];
+        const double angle = turns[next];
+        const double handle = (4.0 / 3.0) * std::tan(angle * 0.25) /
+            std::tan(angle * 0.5);
+        const Raster::Vec2 c1 = p + incoming[next] * (cuts[next] * handle);
+        const Raster::Vec2 c2 = q - outgoing[next] * (cuts[next] * handle);
+        std::vector<Raster::Vec2> arc{p};
+        flattenShapeCubic(p, c1, c2, q, arc);
+        appendShapePoints(rounded.points, arc);
+    }
+    return rounded.points.size() > 1 ? rounded : path;
 }
 
 // after EffectCraft crates/path/src/ops.rs trim and trim_individually
@@ -520,6 +723,16 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
                 shapeScalar(*group, "end", time, 100.0),
                 shapeScalar(*group, "offset", time, 0.0),
                 shapeScalar(*group, "mode", time, 0.0) == 1.0);
+            continue;
+        }
+
+        if (group->match_id == "round") {
+            const double radius = shapeScalar(*group, "radius", time, 10.0);
+            for (size_t slot : live) {
+                if (slot >= arena.size()) continue;
+                for (ShapeContour& path : arena[slot].paths)
+                    path = roundShapeContour(path, radius);
+            }
             continue;
         }
 

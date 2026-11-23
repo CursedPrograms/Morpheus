@@ -774,6 +774,15 @@ PropGroup shapeRepeater(Ids& ids, double copies, std::array<double, 2> offsetPos
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_simple_op
+PropGroup shapeRound(Ids& ids, double radius) {
+    PropGroup group = ids.group("round", "Round Corners 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("radius", "Radius", Value::Scalar(radius))
+        .with_ui(ParamUi{ParamUiKind::Pixels}));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -792,6 +801,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeTrim(ids, 0.0, 100.0, 0.0);
     if (kind == "repeater")
         return shapeRepeater(ids, 3.0, {100.0, 0.0});
+    if (kind == "round")
+        return shapeRound(ids, 10.0);
     return std::nullopt;
 }
 
