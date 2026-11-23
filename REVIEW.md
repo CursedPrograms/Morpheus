@@ -43,9 +43,13 @@ None.
   - Graph Editor parity follow-up: Value and Speed Graph modes, sampled per-component velocity and spatial speed, selected-key Bezier handle editing (influence and speed), Shift-dominant-axis dragging, Fit Graph, and locked-layer edit prevention. Added `--script speed_graph` and ported `shift_locks_drag_to_dominant_axis` plus handle speed/influence math tests; the Release build and all 102/102 self-tests pass, with Value and Speed Graph captures visually checked.
   - Remaining Timeline/keyframe parity includes group movement/editing of selected keys, cross-column marquee and edge auto-scroll, marker editing, group reorder, property reveal/search shortcuts, effect/source rows, full column/switch menus, and graph toolbar interpolation tools and dimension controls.
 
+- **Phase 6 Shape and Text Layers (`crates/path`, `crates/text`)**:
+  - Started the shape-layer property model: shape layers now have the EffectCraft `Contents` root, nested groups and 2D transforms, and rectangle, ellipse, path and fill builders. Added a project JSON round-trip test; the Release build and all 105/105 self-tests pass.
+  - Not yet rendered or exposed in the UI. Remaining work includes path operators/strokes, shape rendering and editing, TextDoc storage/layout/rendering, and Text/Shape capture hooks. EffectCraft text layout uses HarfRust shaping and Unicode bidi; port those semantics before declaring text-layer parity.
+
 ## Kiro asks
 
-EffectCraft source access was restored on 2026-11-23. The Phase 4 Timeline core is committed as `f7dd605`; the follow-up selection/reorder step and Phase 5 keyframe/value-graph core build and pass 100/100 self-tests. Remaining parity work is listed above and should be addressed before moving on to phase 6.
+EffectCraft source access was restored on 2026-11-23. The Phase 4 Timeline core and the Phase 5 keyframe/graph work are committed and tested. Timeline parity items remain above while phase 6 is underway; no blocker.
 
 **Phase 1** (`5518c0f`): the skeleton window with all seven panels (Project, Composition, Timeline, Effect Controls,
 Tools, Preview, Info), menu bar, splash screen, 12 languages, build and install scripts, and the repo files

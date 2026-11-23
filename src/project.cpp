@@ -265,6 +265,8 @@ static std::string propGroupToJson(const Props::PropGroup& g) {
 void Layer::initProps(uint64_t* counter, double anchorX, double anchorY, double posX, double posY) {
     Props::Ids ids(counter);
     props = ids.group("layer", name);
+    if (kind == LayerKind::Shape)
+        props.with(Props::Build::shapeContents(ids));
     props.with(Props::Build::masks(ids));
     props.with(Props::Build::effects(ids));
     props.with(Props::Build::transform(ids, {anchorX, anchorY}, {posX, posY}));

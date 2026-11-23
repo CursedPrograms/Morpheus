@@ -445,6 +445,41 @@ static bool t_layer_kinds_roundtrip() {
     return true;
 }
 
+// after EffectCraft crates/project/src/build.rs contents, shape_group, shape_rect and shape_fill
+static bool t_shape_contents_roundtrip() {
+    Proj p = Proj::makeNew();
+    Layer layer;
+    layer.id.v = p.alloc();
+    layer.name = "Shape Layer";
+    layer.kind = LayerKind::Shape;
+    layer.inPt = Tick::ZERO;
+    layer.outPt = p.compositions[0].duration;
+    layer.initProps(&p.nextId);
+    Props::PropGroup* contents = layer.props.sub_mut("contents");
+    if (!contents || !contents->children.empty()) return false;
+    Props::Ids ids(&p.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {80.0, 40.0}, {12.0, -6.0}, 5.0));
+    items.push_back(Props::Build::shapeFill(ids, {0.1, 0.2, 0.3, 0.8}));
+    contents->children.push_back(Props::Node(Props::Build::shapeGroup(ids, "Group 1", std::move(items))));
+    p.compositions[0].layers.push_back(std::move(layer));
+    const char* tmpPath = "selftest_shape_tmp.morpheus";
+    if (!save(p, tmpPath)) return false;
+    Proj q;
+    if (!load(q, tmpPath)) {
+        remove(tmpPath);
+        return false;
+    }
+    remove(tmpPath);
+    const auto* group = q.compositions[0].layers[0].props.group("contents/group#1");
+    const auto* rect = group ? group->group("contents/rect#1") : nullptr;
+    const auto* size = rect ? rect->prop("size") : nullptr;
+    const auto* fill = group ? group->group("contents/fill#1") : nullptr;
+    const auto* color = fill ? fill->prop("color") : nullptr;
+    return size && size->value == KeyframeModel::Value::Vec2(80.0, 40.0) &&
+        color && color->value == KeyframeModel::Value::Color(0.1, 0.2, 0.3, 0.8);
+}
+
 // after EffectCraft crates/project/src/tests.rs switches roundtrip
 static bool t_switches_roundtrip() {
     Proj p = Proj::makeNew();
@@ -2280,6 +2315,7 @@ void registerAll() {
     add("project::roundtrip_json",                                 t_project_roundtrip_json);
     add("project::comp_resolution_saved",                          t_comp_resolution_saved);
     add("project::all_layer_kinds_roundtrip",                      t_layer_kinds_roundtrip);
+    add("shape::contents_and_primitive_properties_roundtrip",       t_shape_contents_roundtrip);
     add("project::switches_roundtrip",                             t_switches_roundtrip);
     add("project::transform_roundtrip",                            t_transform_roundtrip);
     add("project::paths_resolve",                                  t_project_paths_resolve);

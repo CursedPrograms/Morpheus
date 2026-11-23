@@ -612,6 +612,84 @@ PropGroup effects(Ids& ids) {
     return ids.group("effects", "Effects");
 }
 
+// after EffectCraft crates/project/src/build.rs contents and shape_transform
+PropGroup shapeContents(Ids& ids) {
+    return ids.group("contents", "Contents");
+}
+
+PropGroup shapeTransform(Ids& ids) {
+    PropGroup group = ids.group("transform", "Transform");
+    group.with(ids.prop("anchor", "Anchor Point", Value::Vec2({0.0, 0.0})).with_ui(ParamUi{ParamUiKind::Point}));
+    group.with(ids.prop("position", "Position", Value::Vec2({0.0, 0.0})).with_ui(ParamUi{ParamUiKind::Point}));
+    group.with(ids.prop("scale", "Scale", Value::Vec2({100.0, 100.0})).with_ui(ParamUi{ParamUiKind::Percent}));
+    group.with(ids.prop("skew", "Skew", Value::Scalar(0.0)).with_ui(ParamUi::make_slider(-85.0, 85.0, -85.0, 85.0, 1)));
+    group.with(ids.prop("skewAxis", "Skew Axis", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Angle}));
+    group.with(ids.prop("rotation", "Rotation", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Angle}));
+    group.with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0)));
+    return group;
+}
+
+// after EffectCraft crates/project/src/build.rs indexed and shape_group
+PropGroup shapeGroup(Ids& ids, const std::string& name, std::vector<PropGroup> items) {
+    PropGroup contents = shapeContents(ids);
+    for (auto& item : items) contents.children.push_back(Node(std::move(item)));
+    PropGroup group = ids.group("group", name);
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(std::move(contents));
+    group.with(shapeTransform(ids));
+    return group;
+}
+
+// after EffectCraft crates/project/src/build.rs shape_rect
+PropGroup shapeRect(Ids& ids, std::array<double, 2> size,
+                   std::array<double, 2> position, double roundness) {
+    PropGroup group = ids.group("rect", "Rectangle Path 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(ids.prop("size", "Size", Value::Vec2(size)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("position", "Position", Value::Vec2(position)).with_ui(ParamUi{ParamUiKind::Point}));
+    group.with(ids.prop("roundness", "Roundness", Value::Scalar(roundness)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("perCorner", "Per-Corner Roundness", Value::Bool(false)).with_ui(ParamUi{ParamUiKind::Checkbox}));
+    const double radius = std::isfinite(roundness) ? std::max(0.0, roundness) : 0.0;
+    group.with(ids.prop("topLeftRoundness", "Top Left Roundness", Value::Scalar(radius)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("topRightRoundness", "Top Right Roundness", Value::Scalar(radius)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("bottomRightRoundness", "Bottom Right Roundness", Value::Scalar(radius)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("bottomLeftRoundness", "Bottom Left Roundness", Value::Scalar(radius)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    return group;
+}
+
+// after EffectCraft crates/project/src/build.rs shape_ellipse
+PropGroup shapeEllipse(Ids& ids, std::array<double, 2> size, std::array<double, 2> position) {
+    PropGroup group = ids.group("ellipse", "Ellipse Path 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(ids.prop("size", "Size", Value::Vec2(size)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("position", "Position", Value::Vec2(position)).with_ui(ParamUi{ParamUiKind::Point}));
+    return group;
+}
+
+// after EffectCraft crates/project/src/build.rs shape_path
+PropGroup shapePath(Ids& ids, ShapePath path) {
+    PropGroup group = ids.group("path", "Path 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("direction", "Path Direction", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(ids.prop("path", "Path", Value::Path(path)).with_ui(ParamUi{ParamUiKind::Path}));
+    return group;
+}
+
+// after EffectCraft crates/project/src/build.rs shape_fill
+PropGroup shapeFill(Ids& ids, std::array<double, 4> color) {
+    PropGroup group = ids.group("fill", "Fill 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(ParamUi::make_popup({"Below Previous in Same Group", "Above Previous in Same Group"})));
+    group.with(ids.prop("rule", "Fill Rule", Value::Enum(0)).with_ui(ParamUi::make_popup({"Non-Zero Winding", "Even-Odd"})));
+    group.with(ids.prop("color", "Color", Value::Color(color)).with_ui(ParamUi{ParamUiKind::Color}));
+    group.with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0)));
+    return group;
+}
+
 PropGroup mask(Ids& ids, const std::string& name, ShapePath path, MaskMode mode, std::array<uint8_t, 3> color) {
     PropGroup g = ids.group("mask", name);
     g.kind.tag = GroupKindTag::Mask;

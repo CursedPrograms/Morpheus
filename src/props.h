@@ -343,6 +343,13 @@ PropGroup transform(Ids& ids, std::array<double, 2> anchor, std::array<double, 2
 PropGroup masks(Ids& ids);
 PropGroup effects(Ids& ids);
 PropGroup mask(Ids& ids, const std::string& name, ShapePath path, MaskMode mode, std::array<uint8_t, 3> color);
+PropGroup shapeContents(Ids& ids);
+PropGroup shapeTransform(Ids& ids);
+PropGroup shapeGroup(Ids& ids, const std::string& name, std::vector<PropGroup> items);
+PropGroup shapeRect(Ids& ids, std::array<double, 2> size, std::array<double, 2> position, double roundness);
+PropGroup shapeEllipse(Ids& ids, std::array<double, 2> size, std::array<double, 2> position);
+PropGroup shapePath(Ids& ids, ShapePath path);
+PropGroup shapeFill(Ids& ids, std::array<double, 4> color);
 PropGroup path_options(Ids& ids);
 PropGroup more_options(Ids& ids);
 
