@@ -22,9 +22,10 @@ the Atelier apps already here:
   test hooks), and its layers, blend modes, shape layers (`src/shape.*`) and text layers (`src/text.*`), which
   Morpheus can reuse.
 
-The look: Atelier's greys with the Atelier blue `#007bb7`, solid, no gradients or shadows, every setting a slider,
-12 languages (English plus ja, zh, es, ko, fr, de, ru, sr, af, Yucatec Maya, Pennsylvania Dutch), a splash screen,
-opens empty.
+The look: **EffectCraft's UI exactly**: its layout, colours, icons, fonts, spacing and behaviour (Craft ports keep the
+original's UI; see `D:\cc\Atelier\DESIGN.md`, "Craft ports"). From Atelier it takes only the splash screen, the 12
+languages (English plus ja, zh, es, ko, fr, de, ru, sr, af, Yucatec Maya, Pennsylvania Dutch), opening empty, the
+installer and shortcut names, and Morpheus's own logo.
 
 ## The phases (in order; commit each step that builds and works)
 
