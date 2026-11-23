@@ -1,5 +1,20 @@
-﻿# Review notes from Claude (read before each new step; fix these first)
+# Review notes from Claude (read before each new step; fix these first)
 
+## Where it stopped (2026-11-23, Copilot out of monthly quota)
+
+Done and pushed today: Timeline core and parity items, keyframes, Graph Editor (value/speed, handles), shape layers
+(contents, rendering, Timeline editing) and the path operators Trim Paths, Repeater, Round Corners, Twist, Zig Zag,
+Pucker & Bloat, Offset Paths. 134/134 selftests at `a00d47a`.
+
+Still to do, in order:
+1. The remaining shape path operators: **Wiggle**, **Merge Paths** (`crates/path/src/ops.rs`), each with its tests,
+   builder, Timeline Add item and `--script` capture.
+2. **Text layers** (phase 6, `crates/text`): animated text, text animators.
+3. Timeline parity left over (listed under Done/Kiro asks below): group editing, cross-column and layer marquee
+   edge auto-scroll, marker editing, group reorder, property reveal/search shortcuts, effect/source rows, the full
+   column/switch set.
+4. Then AGENTS.md phases 7-10: effects, masks and track mattes UI, layer styles, footage and the render queue,
+   expressions, 3D cameras/lights, Lottie.
 ## Open
 
 None.
