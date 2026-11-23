@@ -486,7 +486,8 @@ static bool t_shape_item_builders() {
     Props::Ids ids(&project.nextId);
     const std::pair<const char*, const char*> supported[] = {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
-        {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"}, {"trim", "trim"}
+        {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"},
+        {"trim", "trim"}, {"repeater", "repeater"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -513,6 +514,15 @@ static bool t_shape_item_builders() {
             const Props::Property* mode = item->prop("mode");
             if (!end || end->value.as_f64() != 100.0 || !mode ||
                 mode->ui.options != std::vector<std::string>{"Simultaneously", "Individually"})
+                return false;
+        } else if (kind == std::string("repeater")) {
+            const Props::Property* copies = item->prop("copies");
+            const Props::Property* composite = item->prop("composite");
+            const Props::PropGroup* transform = item->group("transform");
+            const Props::Property* position = transform ? transform->prop("position") : nullptr;
+            if (!copies || copies->value.as_f64() != 3.0 || !composite ||
+                composite->ui.options != std::vector<std::string>{"Below", "Above"} ||
+                !position || position->value.as_vec2() != std::array<double, 2>{100.0, 0.0})
                 return false;
         }
     }
@@ -2367,6 +2377,85 @@ static bool t_render_shape_trim_individually() {
         image.get(130, 50)[3] < 0.01f && image.get(169, 50)[3] < 0.01f;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_repeater and crates/render/src/shapes.rs repeater
+static bool t_render_shape_repeater_duplicates_paints() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {20.0, 20.0}, {-50.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 0.0, 0.0, 1.0}));
+    items.push_back(Props::Build::shapeRepeater(ids, 3.0, {40.0, 0.0}));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Repeated Squares", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const Raster::Px first = image.get(50, 50);
+    const Raster::Px second = image.get(90, 50);
+    const Raster::Px third = image.get(130, 50);
+    return first[0] > 0.99f && second[0] > 0.99f && third[0] > 0.99f &&
+        first[3] > 0.99f && second[3] > 0.99f && third[3] > 0.99f;
+}
+
+// after EffectCraft crates/render/src/shapes.rs repeater fractional copies and opacity
+static bool t_render_shape_repeater_fractional_opacity() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {20.0, 20.0}, {-30.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    Props::PropGroup repeater = Props::Build::shapeRepeater(ids, 1.5, {60.0, 0.0});
+    Props::PropGroup* transform = repeater.group_mut("transform");
+    Props::Property* endOpacity = transform ? transform->prop_mut("endOpacity") : nullptr;
+    if (!endOpacity) return false;
+    endOpacity->value = KeyframeModel::Value::Scalar(0.0);
+    items.push_back(std::move(repeater));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Fractional Repeater", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const float originalAlpha = image.get(70, 50)[3];
+    const float partialAlpha = image.get(130, 50)[3];
+    return originalAlpha > 0.99f && partialAlpha > 0.14f && partialAlpha < 0.19f &&
+        image.get(160, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/render/src/shapes.rs collect_in repeater group scoping
+static bool t_render_shape_repeater_stays_in_group() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    auto makePaintGroup = [&](double x, std::array<double, 4> color,
+                              bool repeat) {
+        std::vector<Props::PropGroup> items;
+        items.push_back(Props::Build::shapeRect(ids, {20.0, 20.0}, {x, 0.0}, 0.0));
+        items.push_back(Props::Build::shapeFill(ids, color));
+        if (repeat)
+            items.push_back(Props::Build::shapeRepeater(ids, 2.0, {40.0, 0.0}));
+        return Props::Build::shapeGroup(ids, repeat ? "Repeated Group" : "Sibling",
+                                       std::move(items));
+    };
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        makePaintGroup(-50.0, {1.0, 0.0, 0.0, 1.0}, false)));
+    contents->children.emplace_back(Props::Node(
+        makePaintGroup(50.0, {0.0, 1.0, 0.0, 1.0}, true)));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const Raster::Px sibling = image.get(50, 50);
+    const Raster::Px firstCopy = image.get(150, 50);
+    const Raster::Px repeatedCopy = image.get(190, 50);
+    return sibling[0] > 0.99f && sibling[1] < 0.01f &&
+        firstCopy[1] > 0.99f && repeatedCopy[1] > 0.99f &&
+        image.get(90, 50)[3] < 0.01f;
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -2720,6 +2809,9 @@ void registerAll() {
     add("path::trim_across_start_point_is_one_piece",                t_render_shape_trim_across_start);
     add("path::trim_simultaneously_trims_each_path",                 t_render_shape_trim_simultaneously);
     add("path::trim_individually_is_sequential",                     t_render_shape_trim_individually);
+    add("shape::repeater_duplicates_paints",                         t_render_shape_repeater_duplicates_paints);
+    add("shape::repeater_fractional_copy_opacity",                   t_render_shape_repeater_fractional_opacity);
+    add("shape::repeater_stays_in_group",                             t_render_shape_repeater_stays_in_group);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);

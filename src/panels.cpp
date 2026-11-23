@@ -1050,6 +1050,7 @@ static void drawShapeAddMenu(Project::Project* project, Project::Layer& layer,
         {"fill", "Fill", false},
         {"stroke", "Stroke", false},
         {"", "", true},
+        {"repeater", "Repeater", false},
         {"trim", "Trim Paths", false},
     };
     for (const auto& item : items) {

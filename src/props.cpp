@@ -749,6 +749,31 @@ PropGroup shapeTrim(Ids& ids, double start, double end, double offset) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_repeater
+PropGroup shapeRepeater(Ids& ids, double copies, std::array<double, 2> offsetPosition) {
+    PropGroup group = ids.group("repeater", "Repeater 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("copies", "Copies", Value::Scalar(copies)));
+    group.with(ids.prop("offset", "Offset", Value::Scalar(0.0)));
+    group.with(ids.prop("composite", "Composite", Value::Enum(0))
+        .with_ui(ParamUi::make_popup({"Below", "Above"})));
+    PropGroup transform = ids.group("transform", "Transform");
+    transform.with(ids.prop("anchor", "Anchor Point", Value::Vec2({0.0, 0.0}))
+        .with_ui(ParamUi{ParamUiKind::Point}));
+    transform.with(ids.prop("position", "Position", Value::Vec2(offsetPosition))
+        .with_ui(ParamUi{ParamUiKind::Point}));
+    transform.with(ids.prop("scale", "Scale", Value::Vec2({100.0, 100.0}))
+        .with_ui(ParamUi{ParamUiKind::Percent}));
+    transform.with(ids.prop("rotation", "Rotation", Value::Scalar(0.0))
+        .with_ui(ParamUi{ParamUiKind::Angle}));
+    transform.with(ids.prop("startOpacity", "Start Opacity", Value::Scalar(100.0))
+        .with_ui(ParamUi{ParamUiKind::Percent}));
+    transform.with(ids.prop("endOpacity", "End Opacity", Value::Scalar(100.0))
+        .with_ui(ParamUi{ParamUiKind::Percent}));
+    group.with(std::move(transform));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -765,6 +790,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 2.0);
     if (kind == "trim")
         return shapeTrim(ids, 0.0, 100.0, 0.0);
+    if (kind == "repeater")
+        return shapeRepeater(ids, 3.0, {100.0, 0.0});
     return std::nullopt;
 }
 

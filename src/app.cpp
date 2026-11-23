@@ -270,6 +270,32 @@ void script(const std::string& name) {
                 SDL_Log("script shape_trim: applied Trim Paths to the Shape Layer Contents.");
             }
         }
+    } else if (name == "shape_repeater") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto repeaterId =
+                    Props::Build::addShapeItem(ids, *contents, "repeater");
+                Props::PropGroup* repeater =
+                    repeaterId ? contents->find_group_mut(*repeaterId) : nullptr;
+                Props::Property* copies = repeater ? repeater->prop_mut("copies") : nullptr;
+                if (copies) copies->value = KeyframeModel::Value::Scalar(4.0);
+                if (Props::PropGroup* transform = repeater ? repeater->group_mut("transform") : nullptr) {
+                    if (Props::Property* position = transform->prop_mut("position"))
+                        position->value = KeyframeModel::Value::Vec2({80.0, 0.0});
+                    if (Props::Property* rotation = transform->prop_mut("rotation"))
+                        rotation->value = KeyframeModel::Value::Scalar(12.0);
+                }
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    repeater ? std::vector<uint64_t>{repeater->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_repeater: repeated the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

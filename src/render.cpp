@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <limits>
 #include <iterator>
+#include <unordered_map>
 
 namespace Render {
 
@@ -202,6 +203,7 @@ struct ShapeDraw {
     float opacity = 1.0f;
     bool stroke = false;
     bool evenOdd = false;
+    bool local = true;
     double width = 1.0;
     uint32_t cap = 0;
     uint32_t join = 0;
@@ -473,15 +475,33 @@ static void trimShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size
     }
 }
 
+static std::vector<size_t> usedShapeSlots(const std::vector<size_t>& live,
+                                         const std::vector<ShapeDraw>& draws) {
+    std::vector<size_t> slots = live;
+    for (const ShapeDraw& draw : draws)
+        slots.insert(slots.end(), draw.slots.begin(), draw.slots.end());
+    std::sort(slots.begin(), slots.end());
+    slots.erase(std::unique(slots.begin(), slots.end()), slots.end());
+    return slots;
+}
+
+static void transformShapeSlot(ShapeSlot& slot, const Raster::Mat3& transform) {
+    for (ShapeContour& path : slot.paths)
+        for (Raster::Vec2& point : path.points)
+            point = transform.apply(point);
+}
+
 static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick time,
                               const Raster::Mat3& transform, float parentOpacity,
                               std::vector<ShapeSlot>& arena, std::vector<size_t>& live,
                               std::vector<ShapeDraw>& draws) {
+    const size_t scopeDrawStart = draws.size();
     for (const Props::Node& node : contents.children) {
         const Props::PropGroup* group = node.as_group();
         if (!group || !group->enabled) continue;
         if (group->match_id == "group") {
             std::vector<size_t> nested;
+            const size_t nestedDrawStart = draws.size();
             const float opacity = std::clamp(
                 shapeFloat(*group, "transform/opacity", time, 100.0f) / 100.0f, 0.0f, 1.0f);
             const Raster::Mat3 matrix = transform * shapeTransform(group->group("transform"), time);
@@ -489,6 +509,8 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
                 collectShapeDraws(*child, time, matrix, parentOpacity * opacity,
                                   arena, nested, draws);
             live.insert(live.end(), nested.begin(), nested.end());
+            for (size_t i = nestedDrawStart; i < draws.size(); ++i)
+                draws[i].local = false;
             continue;
         }
 
@@ -498,6 +520,85 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
                 shapeScalar(*group, "end", time, 100.0),
                 shapeScalar(*group, "offset", time, 0.0),
                 shapeScalar(*group, "mode", time, 0.0) == 1.0);
+            continue;
+        }
+
+        if (group->match_id == "repeater") {
+            // Bound project-provided counts to prevent unbounded slot/draw allocation.
+            const double copies = std::clamp(
+                shapeScalar(*group, "copies", time, 3.0), 0.0, 4096.0);
+            const double offset = shapeScalar(*group, "offset", time, 0.0);
+            const size_t count = static_cast<size_t>(std::ceil(copies));
+            const Props::PropGroup* tr = group->group("transform");
+            if (!tr) continue;
+            const auto anchor = shapeVec2(*tr, "anchor", time, {0.0, 0.0});
+            const auto position = shapeVec2(*tr, "position", time, {100.0, 0.0});
+            const auto scale = shapeVec2(*tr, "scale", time, {100.0, 100.0});
+            const double rotation = shapeScalar(*tr, "rotation", time, 0.0);
+            const float startOpacity = static_cast<float>(
+                shapeScalar(*tr, "startOpacity", time, 100.0) / 100.0);
+            const float endOpacity = static_cast<float>(
+                shapeScalar(*tr, "endOpacity", time, 100.0) / 100.0);
+            const auto inverseTransform = transform.inverse();
+            const auto step = [&](double k) {
+                const Raster::Mat3 local =
+                    Raster::Mat3::translate(Raster::vec2(position[0] * k, position[1] * k)) *
+                    Raster::Mat3::translate(Raster::vec2(anchor[0], anchor[1])) *
+                    Raster::Mat3::rotate_deg(rotation * k) *
+                    Raster::Mat3::scale(Raster::vec2(
+                        std::pow(scale[0] / 100.0, k), std::pow(scale[1] / 100.0, k))) *
+                    Raster::Mat3::translate(Raster::vec2(-anchor[0], -anchor[1]));
+                return inverseTransform ? transform * local * *inverseTransform : local;
+            };
+            std::vector<ShapeDraw> baseDraws;
+            baseDraws.reserve(draws.size() - scopeDrawStart);
+            for (size_t i = scopeDrawStart; i < draws.size(); ++i)
+                baseDraws.push_back(std::move(draws[i]));
+            draws.erase(draws.begin() + static_cast<std::ptrdiff_t>(scopeDrawStart), draws.end());
+            const std::vector<size_t> baseLive = std::move(live);
+            const std::vector<size_t> baseSlots = usedShapeSlots(baseLive, baseDraws);
+            std::vector<std::unordered_map<size_t, size_t>> copyMaps(count);
+            for (size_t i = 0; i < count; ++i) {
+                const Raster::Mat3 matrix = step(static_cast<double>(i) + offset);
+                for (size_t slot : baseSlots) {
+                    if (slot >= arena.size()) continue;
+                    ShapeSlot copy = arena[slot];
+                    transformShapeSlot(copy, matrix);
+                    arena.push_back(std::move(copy));
+                    copyMaps[i].emplace(slot, arena.size() - 1);
+                }
+                for (size_t slot : baseLive) {
+                    const auto found = copyMaps[i].find(slot);
+                    if (found != copyMaps[i].end()) live.push_back(found->second);
+                }
+            }
+            std::vector<size_t> order(count);
+            for (size_t i = 0; i < count; ++i) order[i] = i;
+            if (shapeScalar(*group, "composite", time, 0.0) != 1.0)
+                std::reverse(order.begin(), order.end());
+            for (size_t i : order) {
+                const Raster::Mat3 matrix = step(static_cast<double>(i) + offset);
+                const float t = copies > 0.0
+                    ? static_cast<float>(static_cast<double>(i) / copies) : 0.0f;
+                const float opacity = startOpacity + (endOpacity - startOpacity) * t;
+                const float partial = i + 1 == count && copies - std::floor(copies) > 0.0
+                    ? static_cast<float>(copies - std::floor(copies)) : 1.0f;
+                for (const ShapeDraw& base : baseDraws) {
+                    ShapeDraw copy = base;
+                    bool valid = true;
+                    for (size_t& slot : copy.slots) {
+                        const auto found = copyMaps[i].find(slot);
+                        if (found == copyMaps[i].end()) {
+                            valid = false;
+                            break;
+                        }
+                        slot = found->second;
+                    }
+                    if (!valid) continue;
+                    copy.opacity *= opacity * partial;
+                    draws.push_back(std::move(copy));
+                }
+            }
             continue;
         }
 
@@ -529,6 +630,7 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
         if (group->match_id != "fill" && group->match_id != "stroke") continue;
         ShapeDraw draw;
         draw.slots = live;
+        draw.local = true;
         draw.stroke = group->match_id == "stroke";
         draw.opacity = parentOpacity * std::clamp(shapeFloat(*group, "opacity", time, 100.0f) / 100.0f, 0.0f, 1.0f);
         if (const Props::Property* color = group->prop("color")) {
