@@ -32,17 +32,18 @@ None.
   - Layer duration bars use composition-time mapping and label colours; the playhead is frame-accurate and scrubs from the ruler. Bar drags move layers or trim In/Out while keeping `startTime` coherent, with Shift snapping to other layer edges.
   - Layer rows fold their property groups; work area, time ruler, zoom, transport and playback are connected to the software renderer. `Render::FrameCache` is bounded by bytes and reused by the Composition viewer and Preview cache indicator.
   - Added `--script timeline --capture ...` and ported helper/test behavior from `fit_pps`, `set_zoom`, `the_view_pages_to_the_cti`, `cti_snaps_to_the_nearest_candidate`, and `dragging_bar_ends_trims_in_and_out`. The Release build and all 96/96 self-tests pass; the capture was visually checked.
-  - Not yet ported from the much larger Timeline panel: layer/group reorder, multi-selection and marquee, marker editing, effect/source rows, full column/switch menus, and property reveal/search shortcuts.
+  - Layer row dragging reorders selected layers while preserving their stack order; Shift/Ctrl-click selects ranges or toggles layers, and dragging the empty outline selects intersected rows. Added `layer_reorder_drag` ordering tests; the Release build and all 100/100 self-tests pass.
+  - Not yet ported from the much larger Timeline panel: property/key marquee and multi-key editing, group reorder, marker editing, effect/source rows, full column/switch menus, and property reveal/search shortcuts.
 
 - **Phase 5 Keyframe UI core (`crates/ui-egui/src/panels/timeline.rs`, `graph.rs`; `crates/project/src/layer.rs`)**:
   - Property stopwatches enable/disable animation at the current layer time; key navigation and the diamond add/remove the current key. Values are editable in the Timeline rows, and key markers can be selected, frame-dragged, interpolated (Linear, Hold, Bezier, Easy Ease), or deleted.
   - Graph Editor plots numeric animated property components, with frame-quantized time and value dragging. `--script keyframes` and `--script graph_editor` provide screenshot hooks.
   - Ported `Layer::layer_time`, `Layer::comp_time`, and `limits::stretch` semantics (percent stretch, including reverse and invalid values), and routed renderer transforms, opacity, masks, parents, mattes, and nested compositions through layer-local time. Added tests for stretch-aware conversion, key toggling, and rendered keyframes; the Release build and all 99/99 self-tests pass. Both captures were visually checked.
-  - Remaining keyframe/graph features include key selection/marquee and layer locking, Bezier influence handles, speed graph, graph fit/zoom and dimension controls, and graph toolbar interpolation tools.
+  - Remaining keyframe/graph features include multi-key selection/editing and layer-lock behavior, Bezier influence handles, speed graph, graph fit/zoom and dimension controls, and graph toolbar interpolation tools.
 
 ## Kiro asks
 
-EffectCraft source access was restored on 2026-11-23. The Phase 4 Timeline core is committed as `f7dd605`; Phase 5's keyframe and value-graph core builds and passes 99/99 self-tests. Remaining parity work is listed above and should be addressed before moving on to phase 6.
+EffectCraft source access was restored on 2026-11-23. The Phase 4 Timeline core is committed as `f7dd605`; the follow-up selection/reorder step and Phase 5 keyframe/value-graph core build and pass 100/100 self-tests. Remaining parity work is listed above and should be addressed before moving on to phase 6.
 
 **Phase 1** (`5518c0f`): the skeleton window with all seven panels (Project, Composition, Timeline, Effect Controls,
 Tools, Preview, Info), menu bar, splash screen, 12 languages, build and install scripts, and the repo files

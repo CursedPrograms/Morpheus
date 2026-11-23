@@ -1910,6 +1910,18 @@ static bool t_timeline_key_toggle_preserves_last_value() {
         property.keys.front().in_interp == KeyframeModel::Interp::Hold;
 }
 
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs layer_reorder_drag
+static bool t_timeline_layer_reorder_preserves_stack_order() {
+    const std::vector<uint64_t> order{1, 2, 3, 4, 5};
+    if (Timeline::reorderLayers(order, {2, 4}, 5) != std::vector<uint64_t>{1, 3, 2, 4, 5})
+        return false;
+    if (Timeline::reorderLayers(order, {2, 4}, std::nullopt) != std::vector<uint64_t>{1, 3, 5, 2, 4})
+        return false;
+    if (Timeline::reorderLayers(order, {2, 3}, 2) != order)
+        return false;
+    return Timeline::reorderLayers(order, {}, 3) == order;
+}
+
 static std::tuple<Proj, uint64_t, Composition> render_setup() {
     Proj p;
     p.nextId = 1;
@@ -2289,6 +2301,7 @@ void registerAll() {
     add("timeline::scrubbing_snaps_to_frames_and_nearest_targets", t_timeline_snap_and_pixel_mapping);
     add("timeline::bar_drags_trim_and_move_frame_accurately",   t_timeline_trim_and_move_layer);
     add("timeline::key_toggle_preserves_last_value",             t_timeline_key_toggle_preserves_last_value);
+    add("timeline::layer_reorder_preserves_selection_order",     t_timeline_layer_reorder_preserves_stack_order);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);

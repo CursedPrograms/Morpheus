@@ -50,6 +50,7 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <cmath>
 #include <limits>
@@ -133,6 +134,8 @@ static double s_timelinePps = 0.0;
 static float s_timelineZoom = 0.0f;
 static float s_timelineScroll = 0.0f;
 static uint64_t s_selectedLayer = 0;
+static std::unordered_set<uint64_t> s_selectedLayers;
+static uint64_t s_selectionAnchor = 0;
 static bool s_graphEditor = false;
 static std::unordered_set<uint64_t> s_openLayers;
 static std::unordered_set<uint64_t> s_openGroups;
@@ -163,6 +166,12 @@ struct KeyDrag {
 
 static SelectedKey s_selectedKey;
 static KeyDrag s_keyDrag;
+struct LayerRowHit { ImVec2 min; ImVec2 max; uint64_t id; size_t index; };
+static std::vector<LayerRowHit> s_layerRowHits;
+static bool s_layerReorderActive = false;
+static std::vector<uint64_t> s_layerReorderIds;
+static bool s_layerMarqueeActive = false;
+static ImVec2 s_layerMarqueeStart{};
 
 void invalidateFrameCache() {
     s_frameCache.clear();
@@ -171,6 +180,9 @@ void invalidateFrameCache() {
 
 void prepareTimelineCapture(uint64_t layerId) {
     s_selectedLayer = layerId;
+    s_selectedLayers.clear();
+    s_selectedLayers.insert(layerId);
+    s_selectionAnchor = layerId;
     s_openLayers.clear();
     s_openLayers.insert(layerId);
     s_openGroups.clear();
@@ -182,6 +194,10 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_graphEditor = false;
     s_selectedKey = {};
     s_keyDrag = {};
+    s_layerRowHits.clear();
+    s_layerReorderActive = false;
+    s_layerReorderIds.clear();
+    s_layerMarqueeActive = false;
     invalidateFrameCache();
 }
 
@@ -921,6 +937,7 @@ static void drawTimeline(Project::Project* proj) {
     ImGui::BeginChild("##tlayers", {leftSideW, layerAreaH}, false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rulerH);
     bool resizeCursor = false;
+    s_layerRowHits.clear();
     for (size_t ri = 0; ri < rows.size(); ++ri) {
         const Row& row = rows[ri];
         Project::Layer& layer = comp.layers[row.layer];
@@ -928,13 +945,52 @@ static void drawTimeline(Project::Project* proj) {
         ImDrawList* rowDl = ImGui::GetWindowDrawList();
         if (row.kind == Row::Kind::Layer) {
             ImGui::PushID((int)layer.id.v);
-            const bool isSelected = s_selectedLayer == layer.id.v;
+            const bool isSelected = s_selectedLayers.count(layer.id.v) != 0;
+            s_layerRowHits.push_back({rp, {rp.x + leftSideW, rp.y + ROW_H}, layer.id.v, row.layer});
             if (isSelected)
                 rowDl->AddRectFilled(rp, {rp.x + leftSideW, rp.y + ROW_H}, C_DEEP);
             ImGui::SetCursorScreenPos(rp);
             ImGui::InvisibleButton("##layer", {leftSideW, ROW_H});
-            if (ImGui::IsItemClicked())
+            if (ImGui::IsItemClicked()) {
+                const bool shift = ImGui::GetIO().KeyShift;
+                const bool toggle = ImGui::GetIO().KeyCtrl || ImGui::GetIO().KeySuper;
+                if (shift && s_selectionAnchor != 0) {
+                    auto anchor = std::find_if(comp.layers.begin(), comp.layers.end(), [](const Project::Layer& candidate) {
+                        return candidate.id.v == s_selectionAnchor;
+                    });
+                    const size_t anchorIndex = anchor == comp.layers.end() ? row.layer :
+                        static_cast<size_t>(anchor - comp.layers.begin());
+                    const size_t first = std::min(anchorIndex, row.layer);
+                    const size_t last = std::max(anchorIndex, row.layer);
+                    s_selectedLayers.clear();
+                    for (size_t index = first; index <= last; ++index) {
+                        const auto& candidate = comp.layers[index];
+                        if (!candidate.switches.locked && (!comp.hideShy || !candidate.switches.shy))
+                            s_selectedLayers.insert(candidate.id.v);
+                    }
+                } else if (toggle) {
+                    if (isSelected) s_selectedLayers.erase(layer.id.v);
+                    else s_selectedLayers.insert(layer.id.v);
+                    s_selectionAnchor = layer.id.v;
+                } else {
+                    s_selectedLayers.clear();
+                    s_selectedLayers.insert(layer.id.v);
+                    s_selectionAnchor = layer.id.v;
+                }
                 s_selectedLayer = layer.id.v;
+            }
+            if (ImGui::IsItemActive() && ImGui::IsMouseDragging(ImGuiMouseButton_Left, 5.0f) &&
+                !layer.switches.locked && !s_layerReorderActive) {
+                s_layerReorderActive = true;
+                s_layerReorderIds.clear();
+                if (s_selectedLayers.count(layer.id.v) != 0) {
+                    for (const auto& candidate : comp.layers)
+                        if (s_selectedLayers.count(candidate.id.v) != 0 && !candidate.switches.locked)
+                            s_layerReorderIds.push_back(candidate.id.v);
+                } else {
+                    s_layerReorderIds.push_back(layer.id.v);
+                }
+            }
             const ImVec2 center{rp.x + 11.0f, rp.y + ROW_H * 0.5f};
             const bool expanded = s_openLayers.count(layer.id.v) != 0;
             Icons::paintCentered(rowDl, center, 10.0f, expanded ? Icons::Icon::ChevronDown : Icons::Icon::ChevronRight, C_DIM);
@@ -1067,6 +1123,52 @@ static void drawTimeline(Project::Project* proj) {
         }
         rowDl->AddLine({rp.x, rp.y + ROW_H - 1.0f}, {rp.x + leftSideW, rp.y + ROW_H - 1.0f}, C_LINE);
         ImGui::SetCursorScreenPos({rp.x, rp.y + ROW_H});
+    }
+    const ImVec2 blankStart = ImGui::GetCursorScreenPos();
+    const ImVec2 blankSize = ImGui::GetContentRegionAvail();
+    if (blankSize.y > 1.0f) {
+        ImGui::SetCursorScreenPos(blankStart);
+        ImGui::InvisibleButton("##layer-marquee", {leftSideW - 8.0f, blankSize.y});
+        if (ImGui::IsItemActivated()) {
+            s_layerMarqueeActive = true;
+            s_layerMarqueeStart = ImGui::GetIO().MousePos;
+        }
+    }
+    if (s_layerMarqueeActive && (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
+                                 ImGui::IsMouseReleased(ImGuiMouseButton_Left))) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const ImVec2 a{std::min(s_layerMarqueeStart.x, mouse.x), std::min(s_layerMarqueeStart.y, mouse.y)};
+        const ImVec2 b{std::max(s_layerMarqueeStart.x, mouse.x), std::max(s_layerMarqueeStart.y, mouse.y)};
+        ImGui::GetWindowDrawList()->AddRectFilled(a, b, IM_COL32(0, 123, 183, 40));
+        ImGui::GetWindowDrawList()->AddRect(a, b, C_BLUE);
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+            if (!ImGui::GetIO().KeyShift && !ImGui::GetIO().KeyCtrl)
+                s_selectedLayers.clear();
+            for (const LayerRowHit& hit : s_layerRowHits) {
+                const bool intersects = hit.min.y <= b.y && hit.max.y >= a.y &&
+                    hit.min.x <= b.x && hit.max.x >= a.x;
+                if (intersects && hit.index < comp.layers.size() &&
+                    !comp.layers[hit.index].switches.locked)
+                    s_selectedLayers.insert(hit.id);
+            }
+            s_layerMarqueeActive = false;
+            s_selectedLayer = s_selectedLayers.empty() ? 0 : *s_selectedLayers.begin();
+        }
+    }
+    if (s_layerReorderActive && !s_layerReorderIds.empty() && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        const float mouseY = ImGui::GetIO().MousePos.y;
+        float lineY = mouseY;
+        for (const LayerRowHit& hit : s_layerRowHits) {
+            if (std::find(s_layerReorderIds.begin(), s_layerReorderIds.end(), hit.id) != s_layerReorderIds.end())
+                continue;
+            if (mouseY < (hit.min.y + hit.max.y) * 0.5f) {
+                lineY = hit.min.y;
+                break;
+            }
+            lineY = hit.max.y;
+        }
+        ImGui::GetForegroundDrawList()->AddLine(
+            {p0.x, lineY}, {p0.x + leftSideW, lineY}, C_BLUE, 2.0f);
     }
     s_timelineScroll = ImGui::GetScrollY();
     ImGui::EndChild();
@@ -1255,6 +1357,9 @@ static void drawTimeline(Project::Project* proj) {
                 resizeCursor = true;
             if (ImGui::IsItemClicked() && mouse.x >= inX - 4.0f && mouse.x <= outX + 4.0f) {
                 s_selectedLayer = layer.id.v;
+                s_selectedLayers.clear();
+                s_selectedLayers.insert(layer.id.v);
+                s_selectionAnchor = layer.id.v;
                 drag.layer = layer.id.v;
                 drag.mode = nearOut ? 3 : (nearIn ? 2 : 1);
                 drag.startX = mouse.x;
@@ -1339,6 +1444,43 @@ static void drawTimeline(Project::Project* proj) {
     ImGui::GetWindowDrawList()->AddLine({rp2.x, rp2.y + rulerH}, {rp2.x + barAreaW, rp2.y + rulerH}, C_LINE);
     s_timelineScroll = ImGui::GetScrollY();
     ImGui::EndChild();
+
+    if (s_layerReorderActive && (ImGui::IsMouseReleased(ImGuiMouseButton_Left) ||
+                                 ImGui::IsKeyPressed(ImGuiKey_Escape))) {
+        if (ImGui::IsMouseReleased(ImGuiMouseButton_Left) && !s_layerReorderIds.empty()) {
+            const float mouseY = ImGui::GetIO().MousePos.y;
+            std::optional<uint64_t> before;
+            for (const LayerRowHit& hit : s_layerRowHits) {
+                if (std::find(s_layerReorderIds.begin(), s_layerReorderIds.end(), hit.id) != s_layerReorderIds.end())
+                    continue;
+                if (mouseY < (hit.min.y + hit.max.y) * 0.5f) {
+                    before = hit.id;
+                    break;
+                }
+            }
+            std::vector<uint64_t> order;
+            order.reserve(comp.layers.size());
+            for (const auto& layer : comp.layers) order.push_back(layer.id.v);
+            const std::vector<uint64_t> reordered = Timeline::reorderLayers(order, s_layerReorderIds, before);
+            if (reordered != order) {
+                std::unordered_map<uint64_t, Project::Layer> layersById;
+                layersById.reserve(comp.layers.size());
+                for (auto& layer : comp.layers)
+                    layersById.emplace(layer.id.v, std::move(layer));
+                comp.layers.clear();
+                comp.layers.reserve(reordered.size());
+                for (uint64_t id : reordered) {
+                    auto found = layersById.find(id);
+                    if (found != layersById.end())
+                        comp.layers.push_back(std::move(found->second));
+                }
+                proj->dirty = true;
+                invalidateFrameCache();
+            }
+        }
+        s_layerReorderActive = false;
+        s_layerReorderIds.clear();
+    }
 
     const ImVec2 bp0 = {p0.x, p0.y + hdrH + colHdrH + layerAreaH};
     hLine(dl, bp0.x, bp0.x + avW, bp0.y);

@@ -5,6 +5,9 @@
 #include "time_.h"
 #include "props.h"
 #include <cstddef>
+#include <cstdint>
+#include <optional>
+#include <vector>
 
 namespace Timeline {
 
@@ -42,5 +45,10 @@ LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick of
 
 // Add a key at layer time or remove the key there, preserving the last value.
 bool toggleKeyframe(Props::Property& property, Project::Tick layerTime);
+
+// Move selected layer IDs in stack order before a target, or to the stack end.
+std::vector<uint64_t> reorderLayers(const std::vector<uint64_t>& order,
+                                    const std::vector<uint64_t>& moving,
+                                    std::optional<uint64_t> before);
 
 } // namespace Timeline

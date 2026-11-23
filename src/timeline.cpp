@@ -122,4 +122,24 @@ bool toggleKeyframe(Props::Property& property, Project::Tick layerTime) {
     return true;
 }
 
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs layer_reorder_drag
+std::vector<uint64_t> reorderLayers(const std::vector<uint64_t>& order,
+                                    const std::vector<uint64_t>& moving,
+                                    std::optional<uint64_t> before) {
+    if (before && std::find(moving.begin(), moving.end(), *before) != moving.end())
+        return order;
+    std::vector<uint64_t> block;
+    std::vector<uint64_t> result;
+    for (uint64_t id : order) {
+        if (std::find(moving.begin(), moving.end(), id) != moving.end())
+            block.push_back(id);
+        else
+            result.push_back(id);
+    }
+    if (block.empty()) return order;
+    const auto target = before ? std::find(result.begin(), result.end(), *before) : result.end();
+    result.insert(target, block.begin(), block.end());
+    return result;
+}
+
 } // namespace Timeline
