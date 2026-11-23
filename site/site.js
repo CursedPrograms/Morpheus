@@ -2,12 +2,14 @@
 (function () {
   'use strict';
   const features = [
-    ['Seven panels', 'Project, Composition, Timeline, Effect Controls, Tools, Preview and Info, laid out in the Atelier studio look: dark greys and the Atelier blue.'],
+    ['Seven panels', 'Project, Composition, Timeline, Effect Controls, Tools, Preview and Info, laid out and drawn as EffectCraft draws them, with its own icons.'],
     ['The project model', 'Compositions with size, frame rate and duration. Layers: solid, shape, text, image, footage, nested composition, null, camera and light.'],
     ['Transforms', 'Every layer has an anchor point, position, scale, rotation and opacity. In and out points trim it in the Timeline.'],
     ['Save and open', 'Projects are saved as .morpheus JSON files. Open them from the File menu or drop them on the window.'],
     ['Twelve languages', 'English, Japanese, Chinese, Spanish, Korean, French, German, Russian, Serbian, Afrikaans, Yucatec Maya and Pennsylvania Dutch.'],
-    ['Coming: rendering, keyframes, effects', 'Phase 3 renders a composition to screen. Phase 5 adds keyframes and the graph editor. Phase 7 adds the effects stack.']
+    ['Timeline and keyframes', 'Scrub, trim, reorder and select layers; stopwatches, keyframes moved together, and the Graph Editor with value and speed graphs and easing handles.'],
+    ['Shape layers', 'Rectangles, ellipses, paths, fills, strokes and groups, with Trim Paths, Repeater, Round Corners, Twist, Zig Zag, Pucker & Bloat and Offset Paths.'],
+    ['Coming', 'Wiggle and Merge Paths, text layers, effects, footage and the render queue, expressions, 3D cameras and Lottie.']
   ];
   const grid = document.getElementById('features');
   if (grid) {
