@@ -334,6 +334,28 @@ void script(const std::string& name) {
                 SDL_Log("script shape_twist: twisted the Shape Layer Contents.");
             }
         }
+    } else if (name == "shape_zigzag") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto zigzagId =
+                    Props::Build::addShapeItem(ids, *contents, "zigzag");
+                Props::PropGroup* zigzag =
+                    zigzagId ? contents->find_group_mut(*zigzagId) : nullptr;
+                if (Props::Property* ridges = zigzag ? zigzag->prop_mut("ridges") : nullptr)
+                    ridges->value = KeyframeModel::Value::Scalar(3.0);
+                if (Props::Property* size = zigzag ? zigzag->prop_mut("size") : nullptr)
+                    size->value = KeyframeModel::Value::Scalar(16.0);
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    zigzag ? std::vector<uint64_t>{zigzag->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_zigzag: applied Zig Zag to the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

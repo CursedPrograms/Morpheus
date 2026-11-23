@@ -794,6 +794,18 @@ PropGroup shapeTwist(Ids& ids, double angle, std::array<double, 2> center) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_simple_op
+PropGroup shapeZigZag(Ids& ids, double size, double ridges, bool smooth) {
+    PropGroup group = ids.group("zigzag", "Zig Zag 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("size", "Size", Value::Scalar(size))
+        .with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("ridges", "Ridges per segment", Value::Scalar(ridges)));
+    group.with(ids.prop("points", "Points", Value::Enum(smooth ? 1 : 0))
+        .with_ui(ParamUi::make_popup({"Corner", "Smooth"})));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -816,6 +828,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeRound(ids, 10.0);
     if (kind == "twist")
         return shapeTwist(ids, 0.0, {0.0, 0.0});
+    if (kind == "zigzag")
+        return shapeZigZag(ids, 10.0, 5.0, false);
     return std::nullopt;
 }
 

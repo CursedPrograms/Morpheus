@@ -488,7 +488,7 @@ static bool t_shape_item_builders() {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
         {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"},
         {"trim", "trim"}, {"repeater", "repeater"}, {"round", "round"},
-        {"twist", "twist"}
+        {"twist", "twist"}, {"zigzag", "zigzag"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -536,6 +536,12 @@ static bool t_shape_item_builders() {
             if (!angle || angle->value.as_f64() != 0.0 ||
                 angle->ui.kind != Props::ParamUiKind::Angle || !center ||
                 center->value.as_vec2() != std::array<double, 2>{0.0, 0.0})
+                return false;
+        } else if (kind == std::string("zigzag")) {
+            const Props::Property* ridges = item->prop("ridges");
+            const Props::Property* points = item->prop("points");
+            if (!ridges || ridges->value.as_f64() != 5.0 || !points ||
+                points->ui.options != std::vector<std::string>{"Corner", "Smooth"})
                 return false;
         }
     }
@@ -2638,6 +2644,59 @@ static bool t_render_shape_twist_circle_and_identity() {
     return std::abs(shapeAlphaArea(twisted) - shapeAlphaArea(original)) < 10.0;
 }
 
+// after EffectCraft crates/path/src/ops/tests.rs zigzag_vertex_counts
+static bool t_render_shape_zigzag_alternates() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+        {{-50.0, 0.0}, {50.0, 0.0}}, false)));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 2.0));
+    items.push_back(Props::Build::shapeZigZag(ids, 5.0, 3.0, false));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Zig Zag Line", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const int xs[] = {50, 75, 100, 125, 150};
+    const int ys[] = {55, 45, 55, 45, 55};
+    for (size_t i = 0; i < 5; ++i)
+        if (image.get(xs[i], ys[i])[3] < 0.5f) return false;
+    return image.get(75, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs zigzag_smooth_uses_curves
+static bool t_render_shape_zigzag_smooth() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {80.0, 80.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    Props::PropGroup group = Props::Build::shapeGroup(ids, "Smooth Zig Zag", std::move(items));
+    const uint64_t groupId = group.uid;
+    contents->children.emplace_back(Props::Node(std::move(group)));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image original = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    Props::PropGroup* shapeContents =
+        project.compositions[0].layers.back().props.group_mut("contents");
+    Props::PropGroup* zigGroup = shapeContents
+        ? shapeContents->find_group_mut(groupId) : nullptr;
+    Props::PropGroup* inner = zigGroup ? zigGroup->group_mut("contents") : nullptr;
+    if (!inner) return false;
+    inner->children.emplace_back(Props::Node(
+        Props::Build::shapeZigZag(ids, 5.0, 2.0, true)));
+    const Raster::Image smooth = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    size_t changed = 0;
+    for (size_t i = 0; i < original.data.size(); ++i)
+        if (std::abs(original.data[i][3] - smooth.data[i][3]) > 0.1f) ++changed;
+    return changed > 100 && shapeAlphaArea(smooth) > 4000.0;
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -3000,6 +3059,8 @@ void registerAll() {
     add("path::round_corners_triangle_arc_is_tangent",                t_render_shape_round_corners_triangle);
     add("path::twist_rotates_by_distance",                            t_render_shape_twist_rotates_by_distance);
     add("path::twist_of_centered_circle_keeps_it_round",               t_render_shape_twist_circle_and_identity);
+    add("path::zigzag_vertex_counts",                                 t_render_shape_zigzag_alternates);
+    add("path::zigzag_smooth_uses_curves",                             t_render_shape_zigzag_smooth);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);

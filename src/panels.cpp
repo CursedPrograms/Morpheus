@@ -1054,6 +1054,7 @@ static void drawShapeAddMenu(Project::Project* project, Project::Layer& layer,
         {"round", "Round Corners", false},
         {"trim", "Trim Paths", false},
         {"twist", "Twist", false},
+        {"zigzag", "Zig Zag", false},
     };
     for (const auto& item : items) {
         if (item.separator) {

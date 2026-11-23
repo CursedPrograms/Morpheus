@@ -786,6 +786,135 @@ static void twistShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<siz
     }
 }
 
+static Raster::Vec2 shapePolylineTangentAt(
+    const ShapeContour& path, size_t start, size_t end, double distance) {
+    double traversed = 0.0;
+    for (size_t i = start + 1; i <= end; ++i) {
+        const Raster::Vec2 tangent = path.points[i] - path.points[i - 1];
+        const double segment = tangent.length();
+        if (segment > 1e-12 && traversed + segment >= distance)
+            return tangent * (1.0 / segment);
+        traversed += segment;
+    }
+    for (size_t i = end; i > start; --i) {
+        const Raster::Vec2 tangent = path.points[i] - path.points[i - 1];
+        const double segment = tangent.length();
+        if (segment > 1e-12) return tangent * (1.0 / segment);
+    }
+    return Raster::Vec2::ZERO;
+}
+
+// after EffectCraft crates/path/src/ops.rs zigzag
+static ShapeContour zigzagShapeContour(
+    const ShapeContour& path, double size, double ridges, bool smooth) {
+    const size_t pieces = static_cast<size_t>(
+        std::clamp(std::round(ridges), 0.0, 1000.0)) + 1;
+    const size_t vertexCount = path.vertices.size();
+    const size_t segmentCount = path.closed ? vertexCount :
+        (vertexCount == 0 ? 0 : vertexCount - 1);
+    if (segmentCount == 0) return path;
+    struct Sample {
+        Raster::Vec2 point;
+        Raster::Vec2 tangent;
+        double previousLength;
+        double nextLength;
+    };
+    const auto segmentStart = [&](size_t i) { return path.vertices[i]; };
+    const auto segmentEnd = [&](size_t i) {
+        return i + 1 < vertexCount ? path.vertices[i + 1] : path.points.size() - 1;
+    };
+    std::vector<double> lengths(segmentCount, 0.0);
+    for (size_t i = 0; i < segmentCount; ++i)
+        lengths[i] = shapePolylineLength(path, segmentStart(i), segmentEnd(i));
+    std::vector<Sample> samples;
+    samples.reserve(segmentCount * pieces + (path.closed ? 0 : 1));
+    for (size_t i = 0; i < segmentCount; ++i) {
+        const size_t start = segmentStart(i);
+        const size_t end = segmentEnd(i);
+        const double pieceLength = lengths[i] / pieces;
+        const Raster::Vec2 outgoing =
+            shapePolylineTangentAt(path, start, end, 0.0);
+        const Raster::Vec2 incoming =
+            shapePolylineTangentAt(path, start, end, lengths[i]);
+        const bool hasPrevious = path.closed || i > 0;
+        const double previousLength = hasPrevious
+            ? lengths[(i + segmentCount - 1) % segmentCount] / pieces : 0.0;
+        for (size_t k = 0; k < pieces; ++k) {
+            const double distance = pieceLength * k;
+            Raster::Vec2 tangent =
+                shapePolylineTangentAt(path, start, end, distance);
+            if (k == 0 && hasPrevious) {
+                const Raster::Vec2 sum = incoming + tangent;
+                const double magnitude = sum.length();
+                if (magnitude > 1e-9) tangent = sum * (1.0 / magnitude);
+            }
+            samples.push_back({
+                shapePolylinePointAt(path, start, end, distance),
+                tangent,
+                k == 0 ? previousLength : pieceLength,
+                pieceLength
+            });
+        }
+    }
+    if (!path.closed) {
+        const size_t lastSegment = segmentCount - 1;
+        samples.push_back({
+            path.points[segmentEnd(lastSegment)],
+            shapePolylineTangentAt(path, segmentStart(lastSegment),
+                                   segmentEnd(lastSegment), lengths[lastSegment]),
+            lengths[lastSegment] / pieces,
+            0.0
+        });
+    }
+    const auto displaced = [&](size_t i) {
+        const double amount = i % 2 == 0 ? size : -size;
+        return samples[i].point +
+            Raster::vec2(-samples[i].tangent.y, samples[i].tangent.x) * amount;
+    };
+
+    ShapeContour result;
+    result.closed = path.closed;
+    result.points.push_back(displaced(0));
+    std::vector<size_t> pointIndices(samples.size(), 0);
+    for (size_t i = 0; i < (path.closed ? samples.size() : samples.size() - 1); ++i) {
+        const size_t next = (i + 1) % samples.size();
+        if (smooth) {
+            const Raster::Vec2 p0 = displaced(i);
+            const Raster::Vec2 p3 = displaced(next);
+            flattenShapeCubic(p0,
+                p0 + samples[i].tangent * (samples[i].nextLength * 0.36),
+                p3 - samples[next].tangent * (samples[next].previousLength * 0.36),
+                p3, result.points);
+        } else {
+            result.points.push_back(displaced(next));
+        }
+        if (next != 0 || !path.closed)
+            pointIndices[next] = result.points.size() - 1;
+    }
+    result.vertices = pointIndices;
+    if (!smooth) result.corners = pointIndices;
+    return result;
+}
+
+static void zigzagShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
+                             double size, double ridges, bool smooth,
+                             const Raster::Mat3& transform) {
+    const auto inverse = transform.inverse();
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        for (ShapeContour& path : arena[slot].paths) {
+            ShapeContour local = path;
+            if (inverse)
+                for (Raster::Vec2& point : local.points)
+                    point = inverse->apply(point);
+            path = zigzagShapeContour(local, size, ridges, smooth);
+            if (inverse)
+                for (Raster::Vec2& point : path.points)
+                    point = transform.apply(point);
+        }
+    }
+}
+
 static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick time,
                               const Raster::Mat3& transform, float parentOpacity,
                               std::vector<ShapeSlot>& arena, std::vector<size_t>& live,
@@ -832,6 +961,15 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
             twistShapeSlots(arena, live,
                 shapeScalar(*group, "angle", time, 0.0),
                 shapeVec2(*group, "center", time, {0.0, 0.0}), transform);
+            continue;
+        }
+
+        if (group->match_id == "zigzag") {
+            zigzagShapeSlots(arena, live,
+                shapeScalar(*group, "size", time, 10.0),
+                shapeScalar(*group, "ridges", time, 5.0),
+                shapeScalar(*group, "points", time, 0.0) == 1.0,
+                transform);
             continue;
         }
 
