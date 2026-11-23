@@ -42,13 +42,17 @@ creative suite. Named after the Greek god of dreams who takes any shape.
   and track mattes.
 - **Timeline (phase 4 core):** frame-accurate playhead scrubbing, layer bars, move and in/out trim, foldable property
   rows, playback, and a bounded render-frame cache.
-- **Keyframe UI (phase 5 core):** property stopwatches, keyframe navigation and timeline markers, keyframe dragging,
-  interpolation choices, and an editable value graph.
+- **Timeline and keyframes (phases 4 and 5):** frame-accurate scrubbing, layer bars, move and in/out trim, layer
+  reordering and marquee selection, property stopwatches, keyframes selected by Shift-click or marquee (with edge
+  scrolling) and moved together, interpolation choices, and the Graph Editor with value and speed graphs and easing
+  handles.
+- **Shape layers (phase 6):** rectangles, ellipses, paths, fills, strokes and groups, edited in the Timeline's
+  Contents, with the path operators Trim Paths, Repeater, Round Corners, Twist, Zig Zag, Pucker & Bloat and Offset
+  Paths.
 
 ## Coming next
 
-Remaining Timeline and Graph Editor parity (including layer reordering, marquee selection, graph handles and the
-speed graph), shapes and text (phase 6), effects (phase 7), masks and mattes (phase 8), footage in and the render
+The last path operators (Wiggle, Merge Paths), text layers (phase 6), the rest of the Timeline's parity, effects (phase 7), masks and mattes (phase 8), footage in and the render
 queue (phase 9), expressions and 3D cameras (phase 10).
 
 ## Minimum requirements
