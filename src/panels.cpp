@@ -1049,6 +1049,8 @@ static void drawShapeAddMenu(Project::Project* project, Project::Layer& layer,
         {"", "", true},
         {"fill", "Fill", false},
         {"stroke", "Stroke", false},
+        {"", "", true},
+        {"trim", "Trim Paths", false},
     };
     for (const auto& item : items) {
         if (item.separator) {

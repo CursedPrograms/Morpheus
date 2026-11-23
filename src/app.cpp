@@ -252,6 +252,24 @@ void script(const std::string& name) {
                 SDL_Log("script shape_editing: created editable rectangle, ellipse, path and paint groups.");
             }
         }
+    } else if (name == "shape_trim") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto trimId = Props::Build::addShapeItem(ids, *contents, "trim");
+                Props::PropGroup* trim = trimId ? contents->find_group_mut(*trimId) : nullptr;
+                Props::Property* end = trim ? trim->prop_mut("end") : nullptr;
+                if (end) end->value = KeyframeModel::Value::Scalar(35.0);
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    trim ? std::vector<uint64_t>{trim->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_trim: applied Trim Paths to the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

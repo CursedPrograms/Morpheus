@@ -734,6 +734,21 @@ PropGroup shapeStroke(Ids& ids, std::array<double, 4> color, double width) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_trim
+PropGroup shapeTrim(Ids& ids, double start, double end, double offset) {
+    PropGroup group = ids.group("trim", "Trim Paths 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("start", "Start", Value::Scalar(start))
+        .with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("end", "End", Value::Scalar(end))
+        .with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("offset", "Offset", Value::Scalar(offset))
+        .with_ui(ParamUi{ParamUiKind::Angle}));
+    group.with(ids.prop("mode", "Trim Multiple Shapes", Value::Enum(0))
+        .with_ui(ParamUi::make_popup({"Simultaneously", "Individually"})));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -748,6 +763,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeFill(ids, {1.0, 0.0, 0.0, 1.0});
     if (kind == "stroke")
         return shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 2.0);
+    if (kind == "trim")
+        return shapeTrim(ids, 0.0, 100.0, 0.0);
     return std::nullopt;
 }
 

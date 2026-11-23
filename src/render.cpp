@@ -192,8 +192,12 @@ struct ShapeContour {
     bool closed = false;
 };
 
-struct ShapeDraw {
+struct ShapeSlot {
     std::vector<ShapeContour> paths;
+};
+
+struct ShapeDraw {
+    std::vector<size_t> slots;
     Raster::Px color{0.0f, 0.0f, 0.0f, 1.0f};
     float opacity = 1.0f;
     bool stroke = false;
@@ -365,20 +369,135 @@ static float shapeFloat(const Props::PropGroup& group, const char* name,
     return static_cast<float>(shapeScalar(group, name, time, fallback));
 }
 
+static double shapeContourLength(const ShapeContour& path) {
+    double length = 0.0;
+    for (size_t i = 1; i < path.points.size(); ++i)
+        length += (path.points[i] - path.points[i - 1]).length();
+    return length;
+}
+
+static double shapeSlotLength(const ShapeSlot& slot) {
+    double length = 0.0;
+    for (const ShapeContour& path : slot.paths) length += shapeContourLength(path);
+    return length;
+}
+
+static std::optional<std::vector<std::pair<double, double>>> shapeTrimIntervals(
+    double start, double end, double offsetDegrees) {
+    double s = start / 100.0;
+    double e = end / 100.0;
+    if (s > e) std::swap(s, e);
+    s = std::clamp(s, 0.0, 1.0);
+    e = std::clamp(e, 0.0, 1.0);
+    if (e - s >= 1.0 - 1e-9) return std::nullopt;
+    if (e - s <= 1e-9) return std::vector<std::pair<double, double>>{};
+    double offset = std::fmod(offsetDegrees / 360.0, 1.0);
+    if (offset < 0.0) offset += 1.0;
+    s += offset;
+    e += offset;
+    if (e <= 1.0) return std::vector<std::pair<double, double>>{{s, e}};
+    if (s >= 1.0) return std::vector<std::pair<double, double>>{{s - 1.0, e - 1.0}};
+    return std::vector<std::pair<double, double>>{{s, 1.0}, {0.0, e - 1.0}};
+}
+
+static std::vector<ShapeContour> trimShapePaths(
+    const std::vector<ShapeContour>& paths,
+    const std::vector<std::pair<double, double>>& ranges) {
+    std::vector<ShapeContour> result;
+    double pathBase = 0.0;
+    for (const ShapeContour& path : paths) {
+        double segmentBase = pathBase;
+        for (size_t i = 1; i < path.points.size(); ++i) {
+            const Raster::Vec2 a = path.points[i - 1];
+            const Raster::Vec2 b = path.points[i];
+            const double segmentLength = (b - a).length();
+            if (segmentLength <= 1e-12) continue;
+            const double segmentEnd = segmentBase + segmentLength;
+            for (const auto& range : ranges) {
+                const double from = std::max(segmentBase, range.first);
+                const double to = std::min(segmentEnd, range.second);
+                if (to <= from) continue;
+                const Raster::Vec2 p0 = a + (b - a) * ((from - segmentBase) / segmentLength);
+                const Raster::Vec2 p1 = a + (b - a) * ((to - segmentBase) / segmentLength);
+                if (result.empty() || result.back().points.empty() ||
+                    (result.back().points.back() - p0).length() > 1e-6)
+                    result.push_back({{p0}, false});
+                if ((result.back().points.back() - p1).length() > 1e-9)
+                    result.back().points.push_back(p1);
+            }
+            segmentBase = segmentEnd;
+        }
+        pathBase += shapeContourLength(path);
+    }
+    return result;
+}
+
+// after EffectCraft crates/path/src/ops.rs trim and trim_individually
+static void trimShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
+                          double start, double end, double offset, bool individually) {
+    const auto intervals = shapeTrimIntervals(start, end, offset);
+    if (!intervals) return;
+    if (intervals->empty()) {
+        for (size_t slot : live)
+            if (slot < arena.size()) arena[slot].paths.clear();
+        return;
+    }
+    if (!individually) {
+        for (size_t slot : live) {
+            if (slot >= arena.size()) continue;
+            const double total = shapeSlotLength(arena[slot]);
+            std::vector<std::pair<double, double>> ranges;
+            ranges.reserve(intervals->size());
+            for (const auto& interval : *intervals)
+                ranges.emplace_back(interval.first * total, interval.second * total);
+            arena[slot].paths = trimShapePaths(arena[slot].paths, ranges);
+        }
+        return;
+    }
+
+    double total = 0.0;
+    for (size_t slot : live)
+        if (slot < arena.size()) total += shapeSlotLength(arena[slot]);
+    double base = 0.0;
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        const double slotLength = shapeSlotLength(arena[slot]);
+        std::vector<std::pair<double, double>> ranges;
+        for (const auto& interval : *intervals) {
+            const double from = std::max(0.0, interval.first * total - base);
+            const double to = std::min(slotLength, interval.second * total - base);
+            if (to > from) ranges.emplace_back(from, to);
+        }
+        arena[slot].paths = trimShapePaths(arena[slot].paths, ranges);
+        base += slotLength;
+    }
+}
+
 static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick time,
                               const Raster::Mat3& transform, float parentOpacity,
-                              std::vector<ShapeContour>& live, std::vector<ShapeDraw>& draws) {
+                              std::vector<ShapeSlot>& arena, std::vector<size_t>& live,
+                              std::vector<ShapeDraw>& draws) {
     for (const Props::Node& node : contents.children) {
         const Props::PropGroup* group = node.as_group();
         if (!group || !group->enabled) continue;
         if (group->match_id == "group") {
-            std::vector<ShapeContour> nested;
+            std::vector<size_t> nested;
             const float opacity = std::clamp(
                 shapeFloat(*group, "transform/opacity", time, 100.0f) / 100.0f, 0.0f, 1.0f);
             const Raster::Mat3 matrix = transform * shapeTransform(group->group("transform"), time);
             if (const Props::PropGroup* child = group->group("contents"))
-                collectShapeDraws(*child, time, matrix, parentOpacity * opacity, nested, draws);
+                collectShapeDraws(*child, time, matrix, parentOpacity * opacity,
+                                  arena, nested, draws);
             live.insert(live.end(), nested.begin(), nested.end());
+            continue;
+        }
+
+        if (group->match_id == "trim") {
+            trimShapeSlots(arena, live,
+                shapeScalar(*group, "start", time, 0.0),
+                shapeScalar(*group, "end", time, 100.0),
+                shapeScalar(*group, "offset", time, 0.0),
+                shapeScalar(*group, "mode", time, 0.0) == 1.0);
             continue;
         }
 
@@ -400,14 +519,16 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
             if (shapeScalar(*group, "direction", time, 0.0) == 1.0)
                 path = reverseShapePath(std::move(path));
             ShapeContour contour = flattenShapePath(path, transform);
-            if (contour.points.size() > 1)
-                live.push_back(std::move(contour));
+            if (contour.points.size() > 1) {
+                arena.push_back({{std::move(contour)}});
+                live.push_back(arena.size() - 1);
+            }
             continue;
         }
 
         if (group->match_id != "fill" && group->match_id != "stroke") continue;
         ShapeDraw draw;
-        draw.paths = live;
+        draw.slots = live;
         draw.stroke = group->match_id == "stroke";
         draw.opacity = parentOpacity * std::clamp(shapeFloat(*group, "opacity", time, 100.0f) / 100.0f, 0.0f, 1.0f);
         if (const Props::Property* color = group->prop("color")) {
@@ -494,10 +615,12 @@ static bool shapeSegmentHit(const Raster::Vec2& point, const Raster::Vec2& a,
     return capEnd && (point - b).dot(point - b) <= radius * radius && t > hi;
 }
 
-static bool shapePointInStroke(const Raster::Vec2& point, const ShapeDraw& draw) {
+static bool shapePointInStroke(const Raster::Vec2& point,
+                               const std::vector<ShapeContour>& paths,
+                               const ShapeDraw& draw) {
     if (!std::isfinite(draw.width) || draw.width <= 0.0) return false;
     const double radius = draw.width * 0.5;
-    for (const ShapeContour& path : draw.paths) {
+    for (const ShapeContour& path : paths) {
         if (path.points.size() < 2) continue;
         const size_t segmentCount = path.points.size() - 1;
         double distanceAlong = 0.0;
@@ -602,16 +725,22 @@ static Raster::Image renderShapeSource(const Project::Layer& layer,
     const Project::Tick time = layer.layerTime(compTime);
     const Raster::Mat3 origin = Raster::Mat3::translate(
         Raster::vec2(static_cast<double>(width) * 0.5, static_cast<double>(height) * 0.5));
-    std::vector<ShapeContour> live;
+    std::vector<ShapeSlot> arena;
+    std::vector<size_t> live;
     std::vector<ShapeDraw> draws;
-    collectShapeDraws(*contents, time, origin, 1.0f, live, draws);
+    collectShapeDraws(*contents, time, origin, 1.0f, arena, live, draws);
 
     constexpr int samples = 4;
     for (auto draw = draws.rbegin(); draw != draws.rend(); ++draw) {
-        if (draw->opacity <= 0.0f || draw->paths.empty()) continue;
+        if (draw->opacity <= 0.0f || draw->slots.empty()) continue;
+        std::vector<ShapeContour> paths;
+        for (size_t slot : draw->slots)
+            if (slot < arena.size())
+                paths.insert(paths.end(), arena[slot].paths.begin(), arena[slot].paths.end());
+        if (paths.empty()) continue;
         double minX = static_cast<double>(width), minY = static_cast<double>(height);
         double maxX = 0.0, maxY = 0.0;
-        for (const ShapeContour& path : draw->paths) {
+        for (const ShapeContour& path : paths) {
             for (const Raster::Vec2& point : path.points) {
                 minX = std::min(minX, point.x);
                 minY = std::min(minY, point.y);
@@ -632,8 +761,8 @@ static Raster::Image renderShapeSource(const Project::Layer& layer,
                         const Raster::Vec2 point{x + (sx + 0.5) / samples,
                                                  y + (sy + 0.5) / samples};
                         const bool hit = draw->stroke
-                            ? shapePointInStroke(point, *draw)
-                            : shapePointInFill(point.x, point.y, draw->paths, draw->evenOdd);
+                            ? shapePointInStroke(point, paths, *draw)
+                            : shapePointInFill(point.x, point.y, paths, draw->evenOdd);
                         if (hit) ++covered;
                     }
                 }

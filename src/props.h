@@ -351,6 +351,7 @@ PropGroup shapeEllipse(Ids& ids, std::array<double, 2> size, std::array<double, 
 PropGroup shapePath(Ids& ids, ShapePath path);
 PropGroup shapeFill(Ids& ids, std::array<double, 4> color);
 PropGroup shapeStroke(Ids& ids, std::array<double, 4> color, double width);
+PropGroup shapeTrim(Ids& ids, double start, double end, double offset);
 PropGroup shapeStrokeTaper(Ids& ids);
 PropGroup shapeStrokeWave(Ids& ids);
 PropGroup path_options(Ids& ids);

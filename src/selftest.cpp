@@ -486,7 +486,7 @@ static bool t_shape_item_builders() {
     Props::Ids ids(&project.nextId);
     const std::pair<const char*, const char*> supported[] = {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
-        {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"}
+        {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"}, {"trim", "trim"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -508,9 +508,15 @@ static bool t_shape_item_builders() {
                 : KeyframeModel::Value::Color(1.0, 1.0, 1.0, 1.0);
             if (!color || color->value != expected)
                 return false;
+        } else if (kind == std::string("trim")) {
+            const Props::Property* end = item->prop("end");
+            const Props::Property* mode = item->prop("mode");
+            if (!end || end->value.as_f64() != 100.0 || !mode ||
+                mode->ui.options != std::vector<std::string>{"Simultaneously", "Individually"})
+                return false;
         }
     }
-    return !Props::Build::shapeItem(ids, "trim").has_value();
+    return !Props::Build::shapeItem(ids, "unknown").has_value();
 }
 
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
@@ -528,7 +534,7 @@ static bool t_shape_add_to_contents() {
     if (!rectId || !inner || inner->children.size() != 1 ||
         inner->children[0].match_id() != "rect") return false;
     const uint64_t nextId = project.nextId;
-    return !Props::Build::addShapeItem(ids, contents, "trim", *groupId).has_value() &&
+    return !Props::Build::addShapeItem(ids, contents, "unknown", *groupId).has_value() &&
         !Props::Build::addShapeItem(ids, contents, "fill", 999999).has_value() &&
         project.nextId == nextId;
 }
@@ -2260,6 +2266,107 @@ static bool t_render_shape_primitives_and_group_transform() {
         group[3] > 0.49f && group[3] < 0.51f;
 }
 
+// after EffectCraft crates/path/src/ops/tests.rs trim_half_square
+static bool t_render_shape_trim_half_square() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    items.push_back(Props::Build::shapeTrim(ids, 0.0, 50.0, 0.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Trimmed Square", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(119, 50)[3] > 0.5f && image.get(100, 69)[3] > 0.5f &&
+        image.get(80, 50)[3] < 0.01f &&
+        image.get(120, 50)[3] > image.get(100, 30)[3];
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs trim_empty_keeps_slot
+static bool t_render_shape_trim_empty_keeps_slot() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    items.push_back(Props::Build::shapeTrim(ids, 30.0, 30.0, 0.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Empty Trim", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(120, 50)[3] < 0.01f && image.get(100, 30)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs trim_across_start_point_is_one_piece
+static bool t_render_shape_trim_across_start() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    items.push_back(Props::Build::shapeTrim(ids, 0.0, 50.0, 270.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Wrapped Trim", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(100, 30)[3] > 0.5f && image.get(120, 50)[3] > 0.5f &&
+        image.get(100, 70)[3] < 0.01f && image.get(80, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs trim_simultaneously_trims_each_path
+static bool t_render_shape_trim_simultaneously() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {-50.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeRect(ids, {20.0, 20.0}, {50.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    items.push_back(Props::Build::shapeTrim(ids, 0.0, 50.0, 0.0));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Simultaneous Trim", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(69, 50)[3] > 0.5f && image.get(159, 50)[3] > 0.5f &&
+        image.get(30, 50)[3] < 0.01f && image.get(140, 50)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs trim_individually_is_sequential
+static bool t_render_shape_trim_individually() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {-50.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeRect(ids, {40.0, 40.0}, {50.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0));
+    Props::PropGroup trim = Props::Build::shapeTrim(ids, 0.0, 50.0, 0.0);
+    Props::Property* mode = trim.prop_mut("mode");
+    if (!mode) return false;
+    mode->value = KeyframeModel::Value::Enum(1);
+    items.push_back(std::move(trim));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Individual Trim", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    return image.get(30, 50)[3] > 0.5f && image.get(69, 50)[3] > 0.5f &&
+        image.get(130, 50)[3] < 0.01f && image.get(169, 50)[3] < 0.01f;
+}
+
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
 static bool t_render_solid_fills_comp() {
     auto [p, cid, comp] = render_setup();
@@ -2608,6 +2715,11 @@ void registerAll() {
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::shape_layer_draws_fill_and_stroke",                t_render_shape_fill_and_stroke);
     add("render::shape_primitives_and_group_transform",             t_render_shape_primitives_and_group_transform);
+    add("path::trim_half_square",                                    t_render_shape_trim_half_square);
+    add("path::trim_empty_keeps_slot",                               t_render_shape_trim_empty_keeps_slot);
+    add("path::trim_across_start_point_is_one_piece",                t_render_shape_trim_across_start);
+    add("path::trim_simultaneously_trims_each_path",                 t_render_shape_trim_simultaneously);
+    add("path::trim_individually_is_sequential",                     t_render_shape_trim_individually);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);
