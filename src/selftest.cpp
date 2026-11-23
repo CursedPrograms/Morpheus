@@ -1894,6 +1894,22 @@ static bool t_timeline_trim_and_move_layer() {
     return minimum.out == original.in + frame;
 }
 
+// after EffectCraft crates/engine/src/cmd/prop.rs toggle_key_at
+static bool t_timeline_key_toggle_preserves_last_value() {
+    Props::Property property(1, "amount", "Amount", KeyframeModel::Value::Scalar(10.0));
+    const Tick time = Tick::from_seconds_f64(1.0);
+    if (!Timeline::toggleKeyframe(property, time) || property.keys.size() != 1)
+        return false;
+    property.set_value_at(time, KeyframeModel::Value::Scalar(42.0));
+    if (Timeline::toggleKeyframe(property, time) || !property.keys.empty())
+        return false;
+    if (property.value != KeyframeModel::Value::Scalar(42.0))
+        return false;
+    property.hold_only = true;
+    return Timeline::toggleKeyframe(property, time) && property.keys.size() == 1 &&
+        property.keys.front().in_interp == KeyframeModel::Interp::Hold;
+}
+
 static std::tuple<Proj, uint64_t, Composition> render_setup() {
     Proj p;
     p.nextId = 1;
@@ -1923,7 +1939,7 @@ static Layer make_solid(Proj& p, const Composition& comp, std::array<float, 3> c
     l.inPt = Tick::ZERO;
     l.outPt = comp.duration;
     l.startTime = Tick::ZERO;
-    l.stretch = 1.0;
+    l.stretch = 100.0;
     l.xform.anchorX = (float)w / 2.0f;
     l.xform.anchorY = (float)h / 2.0f;
     l.xform.posX = (float)comp.width / 2.0f;
@@ -1965,6 +1981,62 @@ static bool t_render_position_keyframes_move_layer() {
     auto b = Render::render_frame(&p, cid, Tick::from_seconds_f64(0.5), 1.0);
     if (!(b.get(100, 50)[3] > 0.99f && b.get(20, 50)[3] < 0.01f)) return false;
     return true;
+}
+
+// after EffectCraft crates/project/src/layer.rs layer_time, comp_time
+static bool t_project_layer_time_maps_keyframes() {
+    auto [p, cid, comp] = render_setup();
+    auto layer = make_solid(p, comp, {0.0f, 1.0f, 0.0f}, 20, 20);
+    layer.inPt = Tick::from_seconds_f64(1.0);
+    layer.startTime = Tick::from_seconds_f64(1.0);
+    layer.stretch = 200.0;
+    const Tick compTime = Tick::from_seconds_f64(2.0);
+    const Tick layerTime = Tick::from_seconds_f64(0.5);
+    if (layer.layerTime(compTime) != layerTime || layer.compTime(layerTime) != compTime)
+        return false;
+    auto* opacity = layer.props.prop_mut("transform/opacity");
+    if (!opacity) return false;
+    const Tick keyTime = layer.layerTime(Tick::from_seconds_f64(1.5));
+    opacity->set_animated(true, keyTime);
+    if (opacity->keys.size() != 1 || opacity->keys[0].time != Tick::from_seconds_f64(0.25))
+        return false;
+    opacity->set_value_at(keyTime, KeyframeModel::Value::Scalar(40.0));
+    if (opacity->value_at(keyTime) != KeyframeModel::Value::Scalar(40.0))
+        return false;
+    layer.stretch = -200.0;
+    if (layer.layerTime(compTime) != Tick::from_seconds_f64(-0.5) ||
+        layer.compTime(Tick::from_seconds_f64(-0.5)) != compTime)
+        return false;
+    layer.stretch = 0.5;
+    if (layer.layerTime(compTime) != Tick::from_seconds_f64(100.0))
+        return false;
+    layer.stretch = 10000.0;
+    if (std::abs(layer.layerTime(compTime).seconds() - 100.0 / 9900.0) > 1e-9)
+        return false;
+    layer.stretch = 0.0;
+    if (layer.layerTime(compTime) != Tick::from_seconds_f64(1.0))
+        return false;
+    layer.stretch = std::numeric_limits<double>::quiet_NaN();
+    return layer.layerTime(compTime) == Tick::from_seconds_f64(1.0);
+}
+
+// after EffectCraft crates/render/src/tests.rs: animated properties use layer-local time
+static bool t_render_stretched_layer_keys() {
+    auto [p, cid, comp] = render_setup();
+    auto layer = make_solid(p, comp, {0.0f, 1.0f, 0.0f}, 20, 20);
+    layer.inPt = Tick::from_seconds_f64(1.0);
+    layer.outPt = comp.duration;
+    layer.startTime = Tick::from_seconds_f64(1.0);
+    layer.stretch = 200.0;
+    auto* position = layer.props.prop_mut("transform/position");
+    if (!position) return false;
+    position->keys = {
+        KeyframeModel::Keyframe(Tick::ZERO, KeyframeModel::Value::Vec3(20.0, 50.0, 0.0)),
+        KeyframeModel::Keyframe(Tick::from_seconds_f64(1.0), KeyframeModel::Value::Vec3(180.0, 50.0, 0.0))
+    };
+    p.compositions[0].layers.push_back(layer);
+    auto image = Render::render_frame(&p, cid, Tick::from_seconds_f64(1.5), 1.0);
+    return image.get(60, 50)[3] > 0.99f && image.get(20, 50)[3] < 0.01f;
 }
 
 // after EffectCraft crates/render/src/tests.rs test opacity_and_blend_modes
@@ -2216,9 +2288,12 @@ void registerAll() {
     add("timeline::playback_pages_the_view_to_the_cti",           t_timeline_pages_to_cti);
     add("timeline::scrubbing_snaps_to_frames_and_nearest_targets", t_timeline_snap_and_pixel_mapping);
     add("timeline::bar_drags_trim_and_move_frame_accurately",   t_timeline_trim_and_move_layer);
+    add("timeline::key_toggle_preserves_last_value",             t_timeline_key_toggle_preserves_last_value);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
+    add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);
+    add("render::stretched_layer_keys_use_layer_time",           t_render_stretched_layer_keys);
     add("render::opacity_and_blend_modes",                      t_render_opacity_and_blend_modes);
     add("render::half_resolution",                              t_render_half_resolution);
     add("render::mask_cuts_layer",                              t_render_mask_cuts_layer);

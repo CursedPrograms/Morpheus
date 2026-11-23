@@ -5,7 +5,7 @@
 //   - Tick / FrameRate time (from time_.h, re-exported here)
 //   - ItemId, LayerId
 //   - Project, Comp, Layer with all Switches fields
-//   - Transform as the property tree base (phase 5 adds keyframes)
+//   - Transform and layer-local time as the property tree evaluation base
 //   - LightKind, PrimitiveKind, LayerSource, Quality, Sampling, FrameBlend,
 //     TrackMatte / MatteKind, AutoOrient, Label
 //   - Save/load as .morpheus JSON
@@ -203,7 +203,7 @@ struct Layer {
     Tick inPt;   // in-point within the composition
     Tick outPt;  // out-point within the composition
     Tick startTime; // layer offset from comp time 0 (default: same as inPt)
-    double stretch = 1.0; // time stretch factor
+    double stretch = 100.0; // time stretch in percent (100 = normal speed)
 
     Switches switches;
 
@@ -247,6 +247,10 @@ struct Layer {
     bool isActiveAt(Tick t) const {
         return t >= inPt && t < outPt;
     }
+
+    // after EffectCraft crates/project/src/layer.rs Layer::layer_time, comp_time
+    Tick layerTime(Tick compTime) const;
+    Tick compTime(Tick layerTime) const;
 
     bool operator==(const Layer& o) const;
     bool operator!=(const Layer& o) const { return !(*this == o); }

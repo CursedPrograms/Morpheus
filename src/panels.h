@@ -38,4 +38,7 @@ void invalidateFrameCache();
 // Select and expand a layer for scripted Timeline captures.
 void prepareTimelineCapture(uint64_t layerId);
 
+// Select and expand a layer for scripted keyframe or graph-editor captures.
+void prepareKeyframeCapture(uint64_t layerId, bool graphEditor);
+
 }  // namespace Panels

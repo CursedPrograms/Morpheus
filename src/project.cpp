@@ -271,6 +271,33 @@ void Layer::initProps(uint64_t* counter, double anchorX, double anchorY, double 
     syncPropsToTransform();
 }
 
+// after EffectCraft crates/project/src/layer.rs scaled
+static Tick scaleLayerTime(Tick time, double multiply, double divide) {
+    const double scaled = static_cast<double>(time.v) * multiply / divide;
+    if (std::isnan(scaled)) return Tick::ZERO;
+    if (scaled >= static_cast<double>(INT64_MAX)) return Tick(INT64_MAX);
+    if (scaled <= static_cast<double>(INT64_MIN)) return Tick(INT64_MIN);
+    return Tick(static_cast<int64_t>(scaled));
+}
+
+// after EffectCraft crates/project/src/limits.rs stretch
+static double effectiveLayerStretch(double stretch) {
+    if (std::isnan(stretch) || stretch == 0.0) return 100.0;
+    return std::copysign(std::clamp(std::abs(stretch), 1.0, 9900.0), stretch);
+}
+
+// after EffectCraft crates/project/src/layer.rs Layer::layer_time
+Tick Layer::layerTime(Tick compTime) const {
+    const double effective = effectiveLayerStretch(stretch);
+    return scaleLayerTime(compTime - startTime, 100.0, effective);
+}
+
+// after EffectCraft crates/project/src/layer.rs Layer::comp_time
+Tick Layer::compTime(Tick layerTime) const {
+    const double effective = effectiveLayerStretch(stretch);
+    return startTime + scaleLayerTime(layerTime, effective, 100.0);
+}
+
 void Layer::syncPropsToTransform() {
     if (const auto* a = props.prop("transform/anchor")) {
         auto v = a->value.as_vec3();

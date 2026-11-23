@@ -133,10 +133,36 @@ static double s_timelinePps = 0.0;
 static float s_timelineZoom = 0.0f;
 static float s_timelineScroll = 0.0f;
 static uint64_t s_selectedLayer = 0;
+static bool s_graphEditor = false;
 static std::unordered_set<uint64_t> s_openLayers;
 static std::unordered_set<uint64_t> s_openGroups;
 static Render::FrameCache s_frameCache;
 static uint64_t s_cacheGeneration = 0;
+
+struct SelectedKey {
+    uint64_t layer = 0;
+    Props::Uid property = 0;
+    Project::Tick time = Project::Tick::ZERO;
+    size_t dimension = 0;
+};
+
+struct KeyDrag {
+    uint64_t layer = 0;
+    Props::Uid property = 0;
+    Project::Tick startTime = Project::Tick::ZERO;
+    Project::Tick currentTime = Project::Tick::ZERO;
+    KeyframeModel::Value value;
+    size_t dimension = 0;
+    float startX = 0.0f;
+    float startY = 0.0f;
+    double graphMin = 0.0;
+    double graphMax = 1.0;
+    float graphHeight = 1.0f;
+    bool graph = false;
+};
+
+static SelectedKey s_selectedKey;
+static KeyDrag s_keyDrag;
 
 void invalidateFrameCache() {
     s_frameCache.clear();
@@ -153,7 +179,15 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_timelineZoom = 0.0f;
     s_currentTime = Project::Tick::ZERO;
     s_playing = false;
+    s_graphEditor = false;
+    s_selectedKey = {};
+    s_keyDrag = {};
     invalidateFrameCache();
+}
+
+void prepareKeyframeCapture(uint64_t layerId, bool graphEditor) {
+    prepareTimelineCapture(layerId);
+    s_graphEditor = graphEditor;
 }
 
 static void setCurrentTime(Project::Tick time) {
@@ -167,6 +201,175 @@ static const Raster::Image* cachedFrame(const Project::Project* proj, const Proj
     Raster::Image rendered = Render::Renderer::render_frame(*proj, comp.id.v, comp.frameRate.tick_of(frame), 0.5);
     s_frameCache.insert(comp.id.v, frame, 0.5, std::move(rendered));
     return s_frameCache.find(comp.id.v, frame, 0.5);
+}
+
+// after EffectCraft crates/ui-egui/src/panels/graph.rs numeric graph components
+static size_t numericDimensions(const KeyframeModel::Value& value) {
+    switch (value.kind) {
+    case KeyframeModel::ValueKind::Scalar: return 1;
+    case KeyframeModel::ValueKind::Vec2: return 2;
+    case KeyframeModel::ValueKind::Vec3: return 3;
+    default: return 0;
+    }
+}
+
+// after EffectCraft crates/keyframe/src/value.rs Value::components
+static double numericComponent(const KeyframeModel::Value& value, size_t dimension) {
+    switch (value.kind) {
+    case KeyframeModel::ValueKind::Scalar: return value.scalar;
+    case KeyframeModel::ValueKind::Vec2: return dimension < 2 ? value.v2[dimension] : 0.0;
+    case KeyframeModel::ValueKind::Vec3: return dimension < 3 ? value.v3[dimension] : 0.0;
+    default: return 0.0;
+    }
+}
+
+// Replace one numeric component while preserving the key's other dimensions.
+static void setNumericComponent(KeyframeModel::Value& value, size_t dimension, double component) {
+    switch (value.kind) {
+    case KeyframeModel::ValueKind::Scalar:
+        if (dimension == 0) value.scalar = component;
+        break;
+    case KeyframeModel::ValueKind::Vec2:
+        if (dimension < 2) value.v2[dimension] = component;
+        break;
+    case KeyframeModel::ValueKind::Vec3:
+        if (dimension < 3) value.v3[dimension] = component;
+        break;
+    default:
+        break;
+    }
+}
+
+// Draw a keyframe and start a frame-quantized drag without changing its selection identity.
+static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Props::Property& property,
+                           KeyframeModel::Keyframe& key, size_t keyIndex,
+                           size_t dimension, ImDrawList* drawList, ImVec2 center,
+                           bool graph, double graphMin, double graphMax, float graphHeight) {
+    const bool selected = s_selectedKey.layer == layer.id.v &&
+        s_selectedKey.property == property.uid && s_selectedKey.time == key.time &&
+        (!graph || s_selectedKey.dimension == dimension);
+    Icons::paintCentered(drawList, center, graph ? 11.0f : 9.0f,
+                         Icons::Icon::Keyframe, selected ? C_BLUE : C_TEXT);
+    char id[128];
+    snprintf(id, sizeof id, "##key_%llu_%llu_%zu_%zu",
+             static_cast<unsigned long long>(layer.id.v),
+             static_cast<unsigned long long>(property.uid), keyIndex, dimension);
+    ImGui::SetCursorScreenPos({center.x - 6.0f, center.y - 7.0f});
+    ImGui::InvisibleButton(id, {12.0f, 14.0f});
+    if (ImGui::IsItemClicked()) {
+        s_selectedLayer = layer.id.v;
+        s_selectedKey = {layer.id.v, property.uid, key.time, dimension};
+        setCurrentTime(layer.compTime(key.time));
+        s_keyDrag = {};
+        s_keyDrag.layer = layer.id.v;
+        s_keyDrag.property = property.uid;
+        s_keyDrag.startTime = key.time;
+        s_keyDrag.currentTime = key.time;
+        s_keyDrag.value = key.value;
+        s_keyDrag.dimension = dimension;
+        s_keyDrag.startX = ImGui::GetIO().MousePos.x;
+        s_keyDrag.startY = ImGui::GetIO().MousePos.y;
+        s_keyDrag.graphMin = graphMin;
+        s_keyDrag.graphMax = graphMax;
+        s_keyDrag.graphHeight = std::max(1.0f, graphHeight);
+        s_keyDrag.graph = graph;
+    }
+
+    if (dimension == 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right))
+        ImGui::OpenPopup(id);
+    bool changed = false;
+    bool remove = false;
+    if (dimension == 0 && ImGui::BeginPopup(id)) {
+        if (ImGui::MenuItem(L("Linear"))) {
+            key.in_interp = KeyframeModel::Interp::Linear;
+            key.out_interp = KeyframeModel::Interp::Linear;
+            changed = true;
+        }
+        if (ImGui::MenuItem(L("Hold"))) {
+            key = key.hold();
+            changed = true;
+        }
+        if (ImGui::MenuItem(L("Bezier"))) {
+            key.in_interp = KeyframeModel::Interp::Bezier;
+            key.out_interp = KeyframeModel::Interp::Bezier;
+            changed = true;
+        }
+        if (ImGui::MenuItem(L("Easy Ease"))) {
+            key = key.eased();
+            changed = true;
+        }
+        if (ImGui::MenuItem(L("Delete"))) remove = true;
+        ImGui::EndPopup();
+    }
+    if (remove) {
+        Timeline::toggleKeyframe(property, key.time);
+        if (!property.is_animated()) layer.syncPropsToTransform();
+        s_selectedKey = {};
+        changed = true;
+    }
+    if (changed) {
+        project->dirty = true;
+        invalidateFrameCache();
+    }
+    return remove;
+}
+
+// Apply a dragged key's layer time and, in the value graph, its selected component.
+static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
+                          double pixelsPerSecond) {
+    if (s_keyDrag.layer == 0) return false;
+    if (!ImGui::IsMouseDown(0)) {
+        s_keyDrag = {};
+        return false;
+    }
+    if (pixelsPerSecond <= 0.0 || !std::isfinite(pixelsPerSecond)) return false;
+
+    auto layerIt = std::find_if(comp.layers.begin(), comp.layers.end(), [](const Project::Layer& layer) {
+        return layer.id.v == s_keyDrag.layer;
+    });
+    if (layerIt == comp.layers.end()) {
+        s_keyDrag = {};
+        return false;
+    }
+    Project::Layer& layer = *layerIt;
+    Props::Property* property = layer.props.find_mut(s_keyDrag.property);
+    if (!property) {
+        s_keyDrag = {};
+        return false;
+    }
+    auto keyIt = std::find_if(property->keys.begin(), property->keys.end(), [](const KeyframeModel::Keyframe& key) {
+        return key.time == s_keyDrag.currentTime;
+    });
+    if (keyIt == property->keys.end()) {
+        s_keyDrag = {};
+        return false;
+    }
+
+    const float mouseX = ImGui::GetIO().MousePos.x;
+    const float mouseY = ImGui::GetIO().MousePos.y;
+    const Project::Tick compOffset = comp.frameRate.snap_nearest(
+        Project::Tick::from_seconds_f64((mouseX - s_keyDrag.startX) / pixelsPerSecond));
+    const Project::Tick targetCompTime = layer.compTime(s_keyDrag.startTime) + compOffset;
+    const Project::Tick targetLayerTime = layer.layerTime(targetCompTime);
+    KeyframeModel::Value value = s_keyDrag.value;
+    if (s_keyDrag.graph && s_keyDrag.dimension < numericDimensions(value)) {
+        const double perPixel = (s_keyDrag.graphMax - s_keyDrag.graphMin) / s_keyDrag.graphHeight;
+        const double delta = (s_keyDrag.startY - mouseY) * perPixel;
+        setNumericComponent(value, s_keyDrag.dimension,
+            numericComponent(s_keyDrag.value, s_keyDrag.dimension) + delta);
+    }
+    if (targetLayerTime == s_keyDrag.currentTime && value == keyIt->value) return false;
+
+    KeyframeModel::Keyframe edited = *keyIt;
+    edited.time = targetLayerTime;
+    edited.value = std::move(value);
+    property->keys.erase(keyIt);
+    KeyframeModel::set_key(property->keys, edited);
+    s_keyDrag.currentTime = targetLayerTime;
+    s_selectedKey.time = targetLayerTime;
+    project->dirty = true;
+    invalidateFrameCache();
+    return true;
 }
 
 // Apply the Atelier ImGui style (call once).
@@ -662,7 +865,9 @@ static void drawTimeline(Project::Project* proj) {
         invalidateFrameCache();
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Enable Motion Blur"));
-    if (Icons::iconButton("##tl_graph", Icons::Icon::Graph, false, {22, 22})) {}
+    if (Icons::iconButton("##tl_graph", Icons::Icon::Graph, s_graphEditor, {22, 22})) {
+        s_graphEditor = !s_graphEditor;
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Graph Editor (Shift+F3)"));
 
     hLine(dl, p0.x, p0.x + avW, p0.y + hdrH);
@@ -718,7 +923,7 @@ static void drawTimeline(Project::Project* proj) {
     bool resizeCursor = false;
     for (size_t ri = 0; ri < rows.size(); ++ri) {
         const Row& row = rows[ri];
-        const Project::Layer& layer = comp.layers[row.layer];
+        Project::Layer& layer = comp.layers[row.layer];
         const ImVec2 rp = ImGui::GetCursorScreenPos();
         ImDrawList* rowDl = ImGui::GetWindowDrawList();
         if (row.kind == Row::Kind::Layer) {
@@ -780,16 +985,82 @@ static void drawTimeline(Project::Project* proj) {
                     }
                 }
             } else {
-                rowDl->AddText({rp.x + indent + 18.0f, rp.y + 2.0f}, C_DIM, row.property->name.c_str());
-                const auto& v = row.property->value;
-                char value[96] = {};
-                if (v.kind == KeyframeModel::ValueKind::Scalar)
-                    snprintf(value, sizeof value, "%.3g", v.scalar);
-                else if (v.kind == KeyframeModel::ValueKind::Vec2)
-                    snprintf(value, sizeof value, "%.3g, %.3g", v.v2[0], v.v2[1]);
-                if (value[0]) {
-                    const ImVec2 size = ImGui::CalcTextSize(value);
-                    rowDl->AddText({rp.x + leftSideW - size.x - 8.0f, rp.y + 2.0f}, C_BLUE, value);
+                Props::Property& property = *row.property;
+                const Project::Tick layerTime = layer.layerTime(s_currentTime);
+                float nameX = rp.x + indent + 8.0f;
+                if (!property.static_only) {
+                    ImGui::SetCursorScreenPos({nameX, rp.y + 2.0f});
+                    if (Icons::iconButton("##stopwatch", Icons::Icon::Stopwatch,
+                                          property.is_animated(), {14, 14})) {
+                        property.set_animated(!property.is_animated(), layerTime);
+                        if (!property.is_animated()) layer.syncPropsToTransform();
+                        proj->dirty = true;
+                        invalidateFrameCache();
+                    }
+                    nameX += 17.0f;
+                }
+                if (property.is_animated()) {
+                    const auto currentKey = std::find_if(property.keys.begin(), property.keys.end(),
+                        [layerTime](const KeyframeModel::Keyframe& key) { return key.time == layerTime; });
+                    const auto previousKey = std::find_if(property.keys.rbegin(), property.keys.rend(),
+                        [layerTime](const KeyframeModel::Keyframe& key) { return key.time < layerTime; });
+                    const auto nextKey = std::find_if(property.keys.begin(), property.keys.end(),
+                        [layerTime](const KeyframeModel::Keyframe& key) { return key.time > layerTime; });
+                    const bool hasPrevious = previousKey != property.keys.rend();
+                    const bool hasNext = nextKey != property.keys.end();
+                    const Project::Tick previousTime = hasPrevious ? previousKey->time : Project::Tick::ZERO;
+                    const Project::Tick nextTime = hasNext ? nextKey->time : Project::Tick::ZERO;
+                    ImGui::SetCursorScreenPos({nameX, rp.y + 2.0f});
+                    if (Icons::iconButton("##prevkey", Icons::Icon::ChevronLeft, false, {12, 14}) && hasPrevious)
+                        setCurrentTime(layer.compTime(previousTime));
+                    nameX += 12.0f;
+                    ImGui::SetCursorScreenPos({nameX, rp.y + 2.0f});
+                    if (Icons::iconButton("##keytoggle", Icons::Icon::Keyframe,
+                                          currentKey != property.keys.end(), {14, 14})) {
+                        Timeline::toggleKeyframe(property, layerTime);
+                        if (!property.is_animated()) layer.syncPropsToTransform();
+                        proj->dirty = true;
+                        invalidateFrameCache();
+                    }
+                    nameX += 14.0f;
+                    ImGui::SetCursorScreenPos({nameX, rp.y + 2.0f});
+                    if (Icons::iconButton("##nextkey", Icons::Icon::ChevronRight, false, {12, 14}) && hasNext)
+                        setCurrentTime(layer.compTime(nextTime));
+                    nameX += 12.0f;
+                }
+                rowDl->AddText({nameX, rp.y + 2.0f}, C_DIM, property.name.c_str());
+
+                const KeyframeModel::Value value = property.value_at(layerTime);
+                float numeric[3] = {
+                    static_cast<float>(value.kind == KeyframeModel::ValueKind::Scalar ? value.scalar :
+                        value.kind == KeyframeModel::ValueKind::Vec2 ? value.v2[0] :
+                        value.kind == KeyframeModel::ValueKind::Vec3 ? value.v3[0] : 0.0),
+                    static_cast<float>(value.kind == KeyframeModel::ValueKind::Vec2 ? value.v2[1] :
+                        value.kind == KeyframeModel::ValueKind::Vec3 ? value.v3[1] : 0.0),
+                    static_cast<float>(value.kind == KeyframeModel::ValueKind::Vec3 ? value.v3[2] : 0.0)
+                };
+                const size_t valueWidth = value.kind == KeyframeModel::ValueKind::Vec3 ? 112 :
+                    value.kind == KeyframeModel::ValueKind::Vec2 ? 82 : 62;
+                ImGui::SetCursorScreenPos({rp.x + leftSideW - static_cast<float>(valueWidth) - 6.0f, rp.y + 1.0f});
+                ImGui::SetNextItemWidth(static_cast<float>(valueWidth));
+                bool changed = false;
+                if (value.kind == KeyframeModel::ValueKind::Scalar) {
+                    changed = ImGui::DragFloat("##value", &numeric[0], 0.1f, 0.0f, 0.0f, "%.3g");
+                } else if (value.kind == KeyframeModel::ValueKind::Vec2) {
+                    changed = ImGui::DragFloat2("##value", numeric, 0.1f, 0.0f, 0.0f, "%.3g");
+                } else if (value.kind == KeyframeModel::ValueKind::Vec3) {
+                    changed = ImGui::DragFloat3("##value", numeric, 0.1f, 0.0f, 0.0f, "%.3g");
+                }
+                if (changed) {
+                    if (value.kind == KeyframeModel::ValueKind::Scalar)
+                        property.set_value_at(layerTime, KeyframeModel::Value::Scalar(numeric[0]));
+                    else if (value.kind == KeyframeModel::ValueKind::Vec2)
+                        property.set_value_at(layerTime, KeyframeModel::Value::Vec2(numeric[0], numeric[1]));
+                    else
+                        property.set_value_at(layerTime, KeyframeModel::Value::Vec3(numeric[0], numeric[1], numeric[2]));
+                    if (!property.is_animated()) layer.syncPropsToTransform();
+                    proj->dirty = true;
+                    invalidateFrameCache();
                 }
             }
             ImGui::PopID();
@@ -857,9 +1128,106 @@ static void drawTimeline(Project::Project* proj) {
         Project::Tick startTime = Project::Tick::ZERO;
     };
     static BarDrag drag;
+    const ImVec2 graphMin = {rp2.x, rp2.y + rulerH};
+    const ImVec2 graphMax = {rp2.x + barAreaW, rp2.y + layerAreaH};
+    double graphValueMin = std::numeric_limits<double>::infinity();
+    double graphValueMax = -std::numeric_limits<double>::infinity();
+    if (s_graphEditor) {
+        trDl->AddRectFilled(graphMin, graphMax, C_WELL);
+        for (const Row& row : rows) {
+            if (row.kind != Row::Kind::Property || !row.property) continue;
+            const size_t dimensions = numericDimensions(row.property->value);
+            for (const auto& key : row.property->keys) {
+                const size_t count = numericDimensions(key.value);
+                for (size_t d = 0; d < std::min(dimensions, count); ++d) {
+                    const double value = numericComponent(key.value, d);
+                    if (!std::isfinite(value)) continue;
+                    graphValueMin = std::min(graphValueMin, value);
+                    graphValueMax = std::max(graphValueMax, value);
+                }
+            }
+        }
+        const bool hasCurves = std::isfinite(graphValueMin) && std::isfinite(graphValueMax);
+        if (hasCurves) {
+            const double padding = std::max(1.0, (graphValueMax - graphValueMin) * 0.1);
+            graphValueMin -= padding;
+            graphValueMax += padding;
+            if (graphValueMax - graphValueMin < 1e-12) graphValueMax = graphValueMin + 1.0;
+        }
+        trDl->PushClipRect(graphMin, graphMax, true);
+        for (int i = 0; i <= 4; ++i) {
+            const float y = graphMin.y + (graphMax.y - graphMin.y) * static_cast<float>(i) / 4.0f;
+            trDl->AddLine({graphMin.x + 42.0f, y}, {graphMax.x, y}, C_LINE);
+            if (hasCurves) {
+                const double value = graphValueMax - (graphValueMax - graphValueMin) * i / 4.0;
+                char label[32];
+                snprintf(label, sizeof label, "%.3g", value);
+                trDl->AddText({graphMin.x + 4.0f, y - 6.0f}, C_DIM, label);
+            }
+        }
+        if (!hasCurves) {
+            trDl->AddText({graphMin.x + 54.0f, graphMin.y + 18.0f}, C_DIM,
+                          L("Select an animated numeric property"));
+        } else {
+            const ImU32 graphColors[] = {
+                IM_COL32(232, 200, 64, 255), IM_COL32(208, 112, 224, 255),
+                IM_COL32(64, 200, 200, 255), IM_COL32(240, 144, 64, 255),
+                IM_COL32(156, 216, 80, 255), IM_COL32(240, 112, 144, 255)
+            };
+            const int sampleCount = std::clamp(static_cast<int>(barAreaW / 8.0f), 2, 120);
+            size_t curveIndex = 0;
+            for (const Row& row : rows) {
+                if (row.kind != Row::Kind::Property || !row.property || row.property->keys.empty())
+                    continue;
+                Project::Layer& layer = comp.layers[row.layer];
+                Props::Property& property = *row.property;
+                const size_t dimensions = numericDimensions(property.value);
+                if (dimensions == 0) continue;
+                for (size_t dimension = 0; dimension < dimensions; ++dimension) {
+                    std::vector<ImVec2> points;
+                    points.reserve(static_cast<size_t>(sampleCount));
+                    for (int i = 0; i < sampleCount; ++i) {
+                        const float x = graphMin.x + (graphMax.x - graphMin.x) * i / (sampleCount - 1);
+                        const double time = s_timelineStart + (x - rp2.x) / pps;
+                        const Project::Tick compTime = Project::Tick::from_seconds_f64(time);
+                        const auto value = property.value_at(layer.layerTime(compTime));
+                        const double component = numericComponent(value, dimension);
+                        const double unit = std::clamp((component - graphValueMin) /
+                            (graphValueMax - graphValueMin), 0.0, 1.0);
+                        const float y = graphMax.y - static_cast<float>(unit) * (graphMax.y - graphMin.y);
+                        points.push_back({x, y});
+                    }
+                    if (points.size() >= 2)
+                        trDl->AddPolyline(points.data(), static_cast<int>(points.size()),
+                                          graphColors[curveIndex % (sizeof(graphColors) / sizeof(graphColors[0]))],
+                                          ImDrawFlags_None, 1.5f);
+                    const ImU32 color = graphColors[curveIndex % (sizeof(graphColors) / sizeof(graphColors[0]))];
+                    for (size_t ki = 0; ki < property.keys.size(); ++ki) {
+                        auto& key = property.keys[ki];
+                        const double value = numericComponent(key.value, dimension);
+                        if (!std::isfinite(value)) continue;
+                        const Project::Tick compTime = layer.compTime(key.time);
+                        const float x = rp2.x + static_cast<float>((compTime.seconds() - s_timelineStart) * pps);
+                        if (x < graphMin.x - 8.0f || x > graphMax.x + 8.0f) continue;
+                        const double unit = std::clamp((value - graphValueMin) /
+                            (graphValueMax - graphValueMin), 0.0, 1.0);
+                        const float y = graphMax.y - static_cast<float>(unit) * (graphMax.y - graphMin.y);
+                        trDl->AddCircleFilled({x, y}, 4.0f, color);
+                        keyframeMarker(proj, layer, property, key, ki, dimension, trDl,
+                                       {x, y}, true, graphValueMin, graphValueMax,
+                                       graphMax.y - graphMin.y);
+                    }
+                    ++curveIndex;
+                }
+            }
+        }
+        trDl->PopClipRect();
+        trDl->AddRect(graphMin, graphMax, C_LINE);
+        ImGui::SetCursorScreenPos({rp2.x, graphMax.y});
+    } else {
     for (size_t ri = 0; ri < rows.size(); ++ri) {
         const Row& row = rows[ri];
-        const Project::Layer& layer = comp.layers[row.layer];
+        Project::Layer& layer = comp.layers[row.layer];
         const ImVec2 brp = ImGui::GetCursorScreenPos();
         if (row.kind == Row::Kind::Layer) {
             const float inX = rp2.x + (float)((layer.inPt.seconds() - s_timelineStart) * pps);
@@ -932,11 +1300,23 @@ static void drawTimeline(Project::Project* proj) {
             trDl->AddText({rp2.x + 8.0f, brp.y + 2.0f}, C_DIM, row.group->name.c_str());
         } else {
             trDl->AddLine({rp2.x, brp.y + ROW_H - 1.0f}, {rp2.x + barAreaW, brp.y + ROW_H - 1.0f}, C_LINE);
+            Props::Property& property = *row.property;
+            for (size_t ki = 0; ki < property.keys.size(); ++ki) {
+                auto& key = property.keys[ki];
+                const Project::Tick compTime = layer.compTime(key.time);
+                const float x = rp2.x + static_cast<float>((compTime.seconds() - s_timelineStart) * pps);
+                if (x < rp2.x - 8.0f || x > rp2.x + barAreaW + 8.0f) continue;
+                keyframeMarker(proj, layer, property, key, ki, 0, trDl,
+                               {x, brp.y + ROW_H * 0.5f}, false, 0.0, 1.0, ROW_H);
+            }
         }
         if (drag.layer == layer.id.v && !ImGui::IsMouseDown(0))
             drag = {};
         ImGui::SetCursorScreenPos({rp2.x, brp.y + ROW_H});
     }
+    }
+
+    updateKeyDrag(proj, comp, pps);
 
     const float playheadX = rp2.x + (float)((s_currentTime.seconds() - s_timelineStart) * pps);
     trDl->AddLine({playheadX, rp2.y}, {playheadX, rp2.y + layerAreaH}, C_BLUE, 1.5f);

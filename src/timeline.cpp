@@ -102,4 +102,24 @@ LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick of
     return original;
 }
 
+// after EffectCraft crates/engine/src/cmd/prop.rs toggle_key_at
+bool toggleKeyframe(Props::Property& property, Project::Tick layerTime) {
+    const auto key = std::lower_bound(property.keys.begin(), property.keys.end(), layerTime,
+        [](const KeyframeModel::Keyframe& candidate, Project::Tick time) {
+            return candidate.time < time;
+        });
+    if (key != property.keys.end() && key->time == layerTime) {
+        if (property.keys.size() == 1)
+            property.value = property.keys.front().value;
+        property.keys.erase(key);
+        return false;
+    }
+
+    KeyframeModel::Keyframe added(layerTime, property.value_at(layerTime));
+    if (property.hold_only)
+        added = added.hold();
+    KeyframeModel::set_key(property.keys, added);
+    return true;
+}
+
 } // namespace Timeline

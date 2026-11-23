@@ -3,6 +3,7 @@
 #pragma once
 
 #include "time_.h"
+#include "props.h"
 #include <cstddef>
 
 namespace Timeline {
@@ -38,5 +39,8 @@ struct LayerTiming {
 // Apply a frame-quantized move or trim to a layer's composition-time range.
 LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick offset,
                             Project::Tick frameDuration, Project::Tick compDuration);
+
+// Add a key at layer time or remove the key there, preserving the last value.
+bool toggleKeyframe(Props::Property& property, Project::Tick layerTime);
 
 } // namespace Timeline

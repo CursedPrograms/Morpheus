@@ -28,7 +28,7 @@ and render the result. Part of **[Atelier](https://github.com/CursedPrograms/Ate
 creative suite. Named after the Greek god of dreams who takes any shape.
 **[Website](https://cursedprograms.github.io/Morpheus/)**
 
-![Morpheus: the app window showing the seven panels — Project, Composition, Timeline, Effect Controls, Tools, Preview, Info](images/window.bmp)
+![Morpheus: the app window showing the Composition viewer, Timeline keyframes, and Graph Editor](images/window.bmp)
 
 ## What works
 
@@ -38,12 +38,18 @@ creative suite. Named after the Greek god of dreams who takes any shape.
   (254,016,000,000 ticks/sec); layers (solid, shape, text, image, footage, nested composition, null, camera, light);
   full property tree with properties, groups, parameter UI, masks, and keyframe base (values, temporal/spatial
   interpolation, auto-Bezier, roving, time reverse). Saved and opened as `.morpheus` JSON.
+- **Rendering (phase 3):** software rendering of compositions with animated transforms, opacity, masks, blending,
+  and track mattes.
+- **Timeline (phase 4 core):** frame-accurate playhead scrubbing, layer bars, move and in/out trim, foldable property
+  rows, playback, and a bounded render-frame cache.
+- **Keyframe UI (phase 5 core):** property stopwatches, keyframe navigation and timeline markers, keyframe dragging,
+  interpolation choices, and an editable value graph.
 
 ## Coming next
 
-Rendering a frame (phase 3), the Timeline with scrubbing and playback (phase 4), keyframe UI and the graph editor
-(phase 5), shapes and text (phase 6), effects (phase 7), masks and mattes (phase 8), footage in and the render queue
-(phase 9), expressions and 3D cameras (phase 10).
+Remaining Timeline and Graph Editor parity (including layer reordering, marquee selection, graph handles and the
+speed graph), shapes and text (phase 6), effects (phase 7), masks and mattes (phase 8), footage in and the render
+queue (phase 9), expressions and 3D cameras (phase 10).
 
 ## Minimum requirements
 
@@ -74,6 +80,8 @@ The code, in `src/`:
 - `app.cpp`: project management, menu actions, the scripted test hooks
 - `panels.cpp`: the seven panels in the Atelier layout and look
 - `project.cpp`: the project model; JSON save and load
+- `render.cpp` / `raster.cpp`: software composition renderer and raster operations
+- `timeline.cpp`: Timeline time mapping, snapping, and frame-accurate layer edits
 - `time_.cpp`: exact integer media time arithmetic and timecode conversions
 - `keyframe.cpp`: values, keyframing, temporal/spatial easing, orientation slerp
 - `props.cpp`: hierarchical property tree, path resolution, and parameter descriptors
@@ -84,7 +92,7 @@ The code, in `src/`:
 
 ## Credits
 
-The panel layout and project model are ported from
+The panel layout, project model, Timeline, keyframe behavior, and renderer are ported from
 [EffectCraft](https://github.com/storytold/effectcraft) (MIT OR Apache-2.0).
 Built with [Dear ImGui](https://github.com/ocornut/imgui), [SDL2](https://www.libsdl.org) and
 [stb](https://github.com/nothings/stb).

@@ -58,6 +58,7 @@ void FrameCache::clear() {
 
 // after EffectCraft crates/render/src/layers.rs layer_matrix_at
 Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const Project::Layer& layer, Project::Tick t, double scale) {
+    const Project::Tick layerTime = layer.layerTime(t);
     Raster::Vec2 anchor{0.0, 0.0};
     Raster::Vec2 pos{0.0, 0.0};
     Raster::Vec2 sc{100.0, 100.0};
@@ -65,7 +66,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
 
     // Anchor
     if (const auto* p = layer.props.prop("transform/anchor")) {
-        auto val = p->value_at(t);
+        auto val = p->value_at(layerTime);
         auto a = val.as_vec2();
         anchor = {a[0], a[1]};
     } else {
@@ -74,7 +75,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
 
     // Position
     if (const auto* p = layer.props.prop("transform/position")) {
-        auto val = p->value_at(t);
+        auto val = p->value_at(layerTime);
         auto a = val.as_vec2();
         pos = {a[0], a[1]};
     } else {
@@ -83,7 +84,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
 
     // Scale
     if (const auto* p = layer.props.prop("transform/scale")) {
-        auto val = p->value_at(t);
+        auto val = p->value_at(layerTime);
         auto a = val.as_vec2();
         sc = {a[0], a[1]};
     } else {
@@ -92,7 +93,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
 
     // Rotation
     if (const auto* p = layer.props.prop("transform/rotation")) {
-        auto val = p->value_at(t);
+        auto val = p->value_at(layerTime);
         rot = val.as_f64();
     } else {
         rot = (double)layer.xform.rotation;
@@ -119,9 +120,10 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
         Raster::Vec2 p_pos{0.0, 0.0};
         Raster::Vec2 p_sc{100.0, 100.0};
         double p_rot = 0.0;
+        const Project::Tick parentTime = parentLayer->layerTime(t);
 
         if (const auto* p = parentLayer->props.prop("transform/anchor")) {
-            auto val = p->value_at(t);
+            auto val = p->value_at(parentTime);
             auto a = val.as_vec2();
             p_anchor = {a[0], a[1]};
         } else {
@@ -129,7 +131,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
         }
 
         if (const auto* p = parentLayer->props.prop("transform/position")) {
-            auto val = p->value_at(t);
+            auto val = p->value_at(parentTime);
             auto a = val.as_vec2();
             p_pos = {a[0], a[1]};
         } else {
@@ -137,7 +139,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
         }
 
         if (const auto* p = parentLayer->props.prop("transform/scale")) {
-            auto val = p->value_at(t);
+            auto val = p->value_at(parentTime);
             auto a = val.as_vec2();
             p_sc = {a[0], a[1]};
         } else {
@@ -145,7 +147,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
         }
 
         if (const auto* p = parentLayer->props.prop("transform/rotation")) {
-            auto val = p->value_at(t);
+            auto val = p->value_at(parentTime);
             p_rot = val.as_f64();
         } else {
             p_rot = (double)parentLayer->xform.rotation;
@@ -166,7 +168,7 @@ Raster::Mat3 Renderer::layer_matrix_at(const Project::Composition& comp, const P
 // after EffectCraft crates/render/src/layers.rs opacity
 float Renderer::layer_opacity_at(const Project::Layer& layer, Project::Tick t) {
     if (const auto* p = layer.props.prop("transform/opacity")) {
-        auto val = p->value_at(t);
+        auto val = p->value_at(layer.layerTime(t));
         return (float)std::clamp(val.as_f64() / 100.0, 0.0, 1.0);
     }
     return std::clamp(layer.xform.opacity / 100.0f, 0.0f, 1.0f);
@@ -194,10 +196,9 @@ Raster::Image Renderer::layer_source(const Project::Project& project, const Proj
         case Project::LayerKind::Composition: {
             if (layer.sourceItem.v != 0) {
                 // Nested composition
-                Project::Tick lt = (t >= layer.inPt) ? (t - layer.inPt + layer.startTime) : Project::Tick::ZERO;
                 RenderOpts sub_opts;
                 sub_opts.scale = 1.0;
-                return render_frame_opts(project, layer.sourceItem.v, lt, sub_opts);
+                return render_frame_opts(project, layer.sourceItem.v, layer.layerTime(t), sub_opts);
             }
             return Raster::Image(lw, lh);
         }
@@ -287,6 +288,7 @@ static inline bool point_in_polygon(double px, double py, const std::vector<Rast
 
 // after EffectCraft crates/render/src/masks.rs apply
 void Renderer::apply_masks(const Project::Layer& layer, Raster::Image& img, Project::Tick t, double /*scale*/) {
+    const Project::Tick layerTime = layer.layerTime(t);
     const auto* masks_group = layer.props.sub("masks");
     if (!masks_group) masks_group = layer.props.group("masks");
     if (!masks_group) return;
@@ -314,7 +316,7 @@ void Renderer::apply_masks(const Project::Layer& layer, Raster::Image& img, Proj
         const auto* path_prop = g->prop("path");
         if (!path_prop) path_prop = g->get("path");
         if (!path_prop) continue;
-        auto val = path_prop->value_at(t);
+        auto val = path_prop->value_at(layerTime);
         const auto* sp = val.as_path();
         if (!sp || !sp->closed || sp->vertices.empty()) continue;
 
@@ -325,9 +327,9 @@ void Renderer::apply_masks(const Project::Layer& layer, Raster::Image& img, Proj
 
         float op = 1.0f;
         if (const auto* op_prop = g->prop("opacity")) {
-            op = (float)(op_prop->value_at(t).as_f64() / 100.0);
+            op = (float)(op_prop->value_at(layerTime).as_f64() / 100.0);
         } else if (const auto* op_prop2 = g->get("opacity")) {
-            op = (float)(op_prop2->value_at(t).as_f64() / 100.0);
+            op = (float)(op_prop2->value_at(layerTime).as_f64() / 100.0);
         }
 
         std::vector<Raster::Vec2> poly = polygon_from_shape_path(*sp);

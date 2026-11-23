@@ -211,6 +211,30 @@ void script(const std::string& name) {
             Panels::prepareTimelineCapture(comp.layers[1].id.v);
             SDL_Log("script timeline: rendered 3 timeline layers with editable timing.");
         }
+    } else if (name == "keyframes" || name == "graph_editor") {
+        script("timeline");
+        if (s_proj && !s_proj->compositions.empty()) {
+            auto& comp = s_proj->compositions[0];
+            if (comp.layers.size() > 1) {
+                auto& layer = comp.layers[1];
+                if (auto* position = layer.props.prop_mut("transform/position")) {
+                    position->set_animated(true, Project::Tick::ZERO);
+                    position->set_value_at(Project::Tick::from_seconds_f64(2.0),
+                        KeyframeModel::Value::Vec3(960.0, 340.0, 0.0));
+                    position->set_value_at(Project::Tick::from_seconds_f64(5.0),
+                        KeyframeModel::Value::Vec3(960.0, 700.0, 0.0));
+                }
+                if (auto* opacity = layer.props.prop_mut("transform/opacity")) {
+                    opacity->set_animated(true, Project::Tick::ZERO);
+                    opacity->set_value_at(Project::Tick::from_seconds_f64(4.0),
+                        KeyframeModel::Value::Scalar(35.0));
+                }
+                s_proj->dirty = true;
+                Panels::prepareKeyframeCapture(layer.id.v, name == "graph_editor");
+                SDL_Log("script %s: added animated Position and Opacity properties.",
+                        name.c_str());
+            }
+        }
     } else if (name == "new_project") {
         // Phase 2 test: create a new project, add a solid layer, save to a temp file,
         // reload it, and verify the round-trip is correct.
