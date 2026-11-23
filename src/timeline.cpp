@@ -56,6 +56,15 @@ double centeredOn(double span, double duration, double cti) {
     return std::clamp(cti - span * 0.5, 0.0, std::max(0.0, duration - span));
 }
 
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs edge_scroll_speed_x
+double edgeScrollSpeedX(double x0, double x1, double x) {
+    if (!std::isfinite(x0) || !std::isfinite(x1) || !std::isfinite(x) || x0 > x1)
+        return 0.0;
+    const double depth = x < x0 ? x - x0 : x > x1 ? x - x1 : 0.0;
+    if (depth == 0.0) return 0.0;
+    return std::clamp(depth / 40.0, -3.0, 3.0) * 400.0 + std::copysign(100.0, depth);
+}
+
 double snapTime(const double* candidates, size_t count, double time, double tolerance) {
     if (!std::isfinite(time) || !std::isfinite(tolerance) || tolerance < 0.0)
         return time;

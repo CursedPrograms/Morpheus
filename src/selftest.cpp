@@ -1894,6 +1894,16 @@ static bool t_timeline_pages_to_cti() {
     return Timeline::pageToCti(10.0, std::numeric_limits<double>::quiet_NaN(), 60.0, 95.0) == 10.0;
 }
 
+// after EffectCraft crates/ui-egui/src/panels/timeline/tests.rs edge_scroll_speed_x
+static bool t_timeline_edge_scroll_speed() {
+    if (Timeline::edgeScrollSpeedX(100.0, 500.0, 300.0) != 0.0) return false;
+    if (!(Timeline::edgeScrollSpeedX(100.0, 500.0, 501.0) > 0.0)) return false;
+    if (!(Timeline::edgeScrollSpeedX(100.0, 500.0, 600.0) >
+          Timeline::edgeScrollSpeedX(100.0, 500.0, 520.0))) return false;
+    if (!(Timeline::edgeScrollSpeedX(100.0, 500.0, 99.0) < 0.0)) return false;
+    return Timeline::edgeScrollSpeedX(100.0, 500.0, std::numeric_limits<double>::quiet_NaN()) == 0.0;
+}
+
 // after EffectCraft crates/ui-egui/src/panels/timeline/tests.rs cti_snaps_to_the_nearest_candidate
 static bool t_timeline_snap_and_pixel_mapping() {
     const double targets[] = {0.0, 1.0, 2.0};
@@ -2387,6 +2397,7 @@ void registerAll() {
     // Timeline tests (after EffectCraft crates/ui-egui/src/panels/timeline.rs)
     add("timeline::fit_and_zoom_preserve_the_anchor",            t_timeline_fit_and_zoom);
     add("timeline::playback_pages_the_view_to_the_cti",           t_timeline_pages_to_cti);
+    add("timeline::marquee_edge_autoscroll_speed",                t_timeline_edge_scroll_speed);
     add("timeline::scrubbing_snaps_to_frames_and_nearest_targets", t_timeline_snap_and_pixel_mapping);
     add("timeline::bar_drags_trim_and_move_frame_accurately",   t_timeline_trim_and_move_layer);
     add("timeline::key_toggle_preserves_last_value",             t_timeline_key_toggle_preserves_last_value);

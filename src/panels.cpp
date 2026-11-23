@@ -1688,6 +1688,13 @@ static void drawTimeline(Project::Project* proj) {
         const ImVec2 max{std::max(s_keyMarqueeStart.x, mouse.x),
                          std::max(s_keyMarqueeStart.y, mouse.y)};
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            const double speed = Timeline::edgeScrollSpeedX(graphMin.x, graphMax.x, mouse.x);
+            if (speed != 0.0 && pps > 0.0) {
+                const double dt = std::clamp(static_cast<double>(ImGui::GetIO().DeltaTime), 0.0, 0.1);
+                const double span = (graphMax.x - graphMin.x) / pps;
+                const double maxStart = std::max(0.0, comp.duration.seconds() - span);
+                s_timelineStart = std::clamp(s_timelineStart + speed * dt / pps, 0.0, maxStart);
+            }
             trDl->PushClipRect(graphMin, graphMax, true);
             trDl->AddRectFilled(min, max, IM_COL32(0, 123, 183, 40));
             trDl->AddRect(min, max, C_BLUE);

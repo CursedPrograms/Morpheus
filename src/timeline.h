@@ -25,6 +25,9 @@ double pageToCti(double start, double span, double duration, double cti);
 // Center the view on the current time without scrolling past the composition.
 double centeredOn(double span, double duration, double cti);
 
+// Horizontal auto-scroll speed when a drag extends beyond the visible timeline.
+double edgeScrollSpeedX(double x0, double x1, double x);
+
 // Snap to the closest candidate within the given time tolerance.
 double snapTime(const double* candidates, size_t count, double time, double tolerance);
 
