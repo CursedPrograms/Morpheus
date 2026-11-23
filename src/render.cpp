@@ -188,8 +188,16 @@ float Renderer::layer_opacity_at(const Project::Layer& layer, Project::Tick t) {
 
 namespace {
 
+struct ShapeCurve {
+    Raster::Vec2 start;
+    Raster::Vec2 control1;
+    Raster::Vec2 control2;
+    Raster::Vec2 end;
+};
+
 struct ShapeContour {
     std::vector<Raster::Vec2> points;
+    std::vector<ShapeCurve> curves;
     std::vector<size_t> vertices;
     std::vector<size_t> corners;
     bool closed = false;
@@ -294,7 +302,13 @@ static ShapeContour flattenShapePath(const KeyframeModel::ShapePath& path,
         const Raster::Vec2 end = point(next);
         const Raster::Vec2 out = tangent(path.out_tangents, i);
         const Raster::Vec2 in = tangent(path.in_tangents, next);
-        if (out.x != 0.0 || out.y != 0.0 || in.x != 0.0 || in.y != 0.0)
+        const bool curved = out.x != 0.0 || out.y != 0.0 ||
+            in.x != 0.0 || in.y != 0.0;
+        contour.curves.push_back({
+            start, curved ? start + out : start,
+            curved ? end + in : end, end
+        });
+        if (curved)
             flattenShapeCubic(start, start + out, end + in, end, contour.points);
         else
             contour.points.push_back(end);
@@ -494,7 +508,7 @@ static std::vector<ShapeContour> trimShapePaths(
                           contains(path.corners, 0)));
                     if (result.empty() || result.back().points.empty() ||
                         (result.back().points.back() - p0).length() > 1e-6)
-                        result.push_back(ShapeContour{{p0}, {}, {}, false});
+                        result.push_back(ShapeContour{{p0}, {}, {}, {}, false});
                     markVertex(result.back(), startsAtVertex, startsAtCorner);
                     if ((result.back().points.back() - p1).length() > 1e-9)
                         result.back().points.push_back(p1);
@@ -620,6 +634,12 @@ static ShapeContour roundShapeContour(const ShapeContour& path, double radius) {
         const double from = cuts[i];
         const double to = std::max(from, length - cuts[next]);
         appendShapePoints(rounded.points, shapePolylineSlice(path, start, end, from, to));
+        if (rounded.points.empty()) continue;
+        if (rounded.vertices.empty()) rounded.vertices.push_back(0);
+        const size_t segmentEndPoint = rounded.points.size() - 1;
+        if ((!path.closed || next != 0 || cuts[next] > 0.0) &&
+            rounded.vertices.back() != segmentEndPoint)
+            rounded.vertices.push_back(segmentEndPoint);
         if (cuts[next] <= 0.0) continue;
 
         const Raster::Vec2 corner = path.points[path.vertices[next]];
@@ -633,6 +653,9 @@ static ShapeContour roundShapeContour(const ShapeContour& path, double radius) {
         std::vector<Raster::Vec2> arc{p};
         flattenShapeCubic(p, c1, c2, q, arc);
         appendShapePoints(rounded.points, arc);
+        if (next != 0 && !rounded.points.empty() &&
+            rounded.vertices.back() != rounded.points.size() - 1)
+            rounded.vertices.push_back(rounded.points.size() - 1);
     }
     return rounded.points.size() > 1 ? rounded : path;
 }
@@ -689,9 +712,16 @@ static std::vector<size_t> usedShapeSlots(const std::vector<size_t>& live,
 }
 
 static void transformShapeSlot(ShapeSlot& slot, const Raster::Mat3& transform) {
-    for (ShapeContour& path : slot.paths)
+    for (ShapeContour& path : slot.paths) {
         for (Raster::Vec2& point : path.points)
             point = transform.apply(point);
+        for (ShapeCurve& curve : path.curves) {
+            curve.start = transform.apply(curve.start);
+            curve.control1 = transform.apply(curve.control1);
+            curve.control2 = transform.apply(curve.control2);
+            curve.end = transform.apply(curve.end);
+        }
+    }
 }
 
 // after EffectCraft crates/path/src/ops.rs twist
@@ -915,6 +945,74 @@ static void zigzagShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<si
     }
 }
 
+// after EffectCraft crates/path/src/ops.rs pucker_bloat
+static void puckerShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
+                             double amount) {
+    if (!std::isfinite(amount) || amount == 0.0) return;
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        ShapeSlot& shape = arena[slot];
+        Raster::Vec2 center = Raster::Vec2::ZERO;
+        size_t pointCount = 0;
+        for (const ShapeContour& path : shape.paths) {
+            for (size_t vertex : path.vertices) {
+                if (vertex >= path.points.size()) continue;
+                center = center + path.points[vertex];
+                ++pointCount;
+            }
+        }
+        if (pointCount == 0) continue;
+        center = center * (1.0 / static_cast<double>(pointCount));
+
+        const auto moveVertex = [&](Raster::Vec2 point) {
+            return center + (point - center) * (1.0 - amount);
+        };
+        const auto moveHandle = [&](Raster::Vec2 point) {
+            return center + (point - center) * (1.0 + amount);
+        };
+        for (ShapeContour& path : shape.paths) {
+            const size_t vertexCount = path.vertices.size();
+            const size_t segmentCount = path.closed ? vertexCount :
+                (vertexCount == 0 ? 0 : vertexCount - 1);
+            if (segmentCount == 0) continue;
+
+            ShapeContour result;
+            result.closed = path.closed;
+            result.points.push_back(moveVertex(path.points[path.vertices[0]]));
+            result.vertices.push_back(0);
+            for (size_t i = 0; i < segmentCount; ++i) {
+                const size_t next = (i + 1) % vertexCount;
+                const Raster::Vec2 start = path.points[path.vertices[i]];
+                const Raster::Vec2 end = next != 0
+                    ? path.points[path.vertices[next]] : path.points.back();
+                const ShapeCurve curve = path.curves.size() == segmentCount
+                    ? path.curves[i]
+                    : ShapeCurve{start, start, end, end};
+                const Raster::Vec2 movedEnd = moveVertex(curve.end);
+                const Raster::Vec2 movedControl1 = moveHandle(curve.control1);
+                const Raster::Vec2 movedControl2 = moveHandle(curve.control2);
+                result.curves.push_back({
+                    result.points.back(), movedControl1, movedControl2, movedEnd
+                });
+                flattenShapeCubic(result.points.back(), movedControl1,
+                                  movedControl2, movedEnd, result.points);
+                const size_t endIndex = result.points.size() - 1;
+                if (next != 0) {
+                    result.vertices.push_back(endIndex);
+                    if (std::find(path.corners.begin(), path.corners.end(),
+                                  path.vertices[next]) != path.corners.end())
+                        result.corners.push_back(endIndex);
+                }
+            }
+            if (path.corners.size() > 0 &&
+                std::find(path.corners.begin(), path.corners.end(), path.vertices[0]) !=
+                    path.corners.end())
+                result.corners.push_back(0);
+            path = std::move(result);
+        }
+    }
+}
+
 static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick time,
                               const Raster::Mat3& transform, float parentOpacity,
                               std::vector<ShapeSlot>& arena, std::vector<size_t>& live,
@@ -970,6 +1068,12 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
                 shapeScalar(*group, "ridges", time, 5.0),
                 shapeScalar(*group, "points", time, 0.0) == 1.0,
                 transform);
+            continue;
+        }
+
+        if (group->match_id == "pucker") {
+            puckerShapeSlots(arena, live,
+                shapeScalar(*group, "amount", time, 0.0) / 100.0);
             continue;
         }
 

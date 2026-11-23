@@ -806,6 +806,15 @@ PropGroup shapeZigZag(Ids& ids, double size, double ridges, bool smooth) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_simple_op
+PropGroup shapePucker(Ids& ids, double amount) {
+    PropGroup group = ids.group("pucker", "Pucker & Bloat 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("amount", "Amount", Value::Scalar(amount))
+        .with_ui(ParamUi::make_slider(-100.0, 100.0, -100.0, 100.0, 1)));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -830,6 +839,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeTwist(ids, 0.0, {0.0, 0.0});
     if (kind == "zigzag")
         return shapeZigZag(ids, 10.0, 5.0, false);
+    if (kind == "pucker")
+        return shapePucker(ids, 0.0);
     return std::nullopt;
 }
 

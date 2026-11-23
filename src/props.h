@@ -356,6 +356,7 @@ PropGroup shapeRepeater(Ids& ids, double copies, std::array<double, 2> offsetPos
 PropGroup shapeRound(Ids& ids, double radius);
 PropGroup shapeTwist(Ids& ids, double angle, std::array<double, 2> center);
 PropGroup shapeZigZag(Ids& ids, double size, double ridges, bool smooth);
+PropGroup shapePucker(Ids& ids, double amount);
 PropGroup shapeStrokeTaper(Ids& ids);
 PropGroup shapeStrokeWave(Ids& ids);
 PropGroup path_options(Ids& ids);

@@ -488,7 +488,7 @@ static bool t_shape_item_builders() {
         {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
         {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"},
         {"trim", "trim"}, {"repeater", "repeater"}, {"round", "round"},
-        {"twist", "twist"}, {"zigzag", "zigzag"}
+        {"twist", "twist"}, {"zigzag", "zigzag"}, {"pucker", "pucker"}
     };
     for (const auto& [kind, matchId] : supported) {
         std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
@@ -542,6 +542,11 @@ static bool t_shape_item_builders() {
             const Props::Property* points = item->prop("points");
             if (!ridges || ridges->value.as_f64() != 5.0 || !points ||
                 points->ui.options != std::vector<std::string>{"Corner", "Smooth"})
+                return false;
+        } else if (kind == std::string("pucker")) {
+            const Props::Property* amount = item->prop("amount");
+            if (!amount || amount->value.as_f64() != 0.0 ||
+                amount->ui.min != -100.0 || amount->ui.max != 100.0)
                 return false;
         }
     }
@@ -2481,6 +2486,27 @@ static double shapeAlphaArea(const Raster::Image& image) {
     return area;
 }
 
+// Build the centered filled square used by the Pucker & Bloat render tests.
+static Raster::Image renderShapePucker(double amount, bool includeOperator = true) {
+    auto [project, compId, comp] = render_setup();
+    project.compositions[0].width = 300;
+    project.compositions[0].height = 300;
+    comp.width = 300;
+    comp.height = 300;
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    items.push_back(Props::Build::shapeRect(ids, {100.0, 100.0}, {0.0, 0.0}, 0.0));
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    if (includeOperator) items.push_back(Props::Build::shapePucker(ids, amount));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return {};
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Pucker & Bloat", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    return Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+}
+
 // after EffectCraft crates/path/src/ops/tests.rs round_corners_square
 static bool t_render_shape_round_corners_square() {
     auto [project, compId, comp] = render_setup();
@@ -2695,6 +2721,33 @@ static bool t_render_shape_zigzag_smooth() {
     for (size_t i = 0; i < original.data.size(); ++i)
         if (std::abs(original.data[i][3] - smooth.data[i][3]) > 0.1f) ++changed;
     return changed > 100 && shapeAlphaArea(smooth) > 4000.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs bloat_moves_vertices_inward
+static bool t_render_shape_bloat_moves_vertices_inward() {
+    const Raster::Image image = renderShapePucker(50.0);
+    int minX = static_cast<int>(image.width), maxX = -1;
+    int minY = static_cast<int>(image.height), maxY = -1;
+    for (uint32_t y = 0; y < image.height; ++y) {
+        for (uint32_t x = 0; x < image.width; ++x) {
+            if (image.get(x, y)[3] <= 0.5f) continue;
+            minX = std::min(minX, static_cast<int>(x));
+            maxX = std::max(maxX, static_cast<int>(x));
+            minY = std::min(minY, static_cast<int>(y));
+            maxY = std::max(maxY, static_cast<int>(y));
+        }
+    }
+    return minX < 100 && maxX > 200 && minY < 100 && maxY > 200;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs pucker_moves_vertices_outward
+static bool t_render_shape_pucker_moves_vertices_outward() {
+    const Raster::Image original = renderShapePucker(0.0, false);
+    const Raster::Image identity = renderShapePucker(0.0);
+    if (original.data != identity.data) return false;
+    const Raster::Image puckered = renderShapePucker(-50.0);
+    const double area = shapeAlphaArea(puckered);
+    return area > 0.0 && area < 22500.0;
 }
 
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
@@ -3061,6 +3114,8 @@ void registerAll() {
     add("path::twist_of_centered_circle_keeps_it_round",               t_render_shape_twist_circle_and_identity);
     add("path::zigzag_vertex_counts",                                 t_render_shape_zigzag_alternates);
     add("path::zigzag_smooth_uses_curves",                             t_render_shape_zigzag_smooth);
+    add("path::bloat_moves_vertices_inwards_and_bulges",                t_render_shape_bloat_moves_vertices_inward);
+    add("path::pucker_moves_vertices_outwards",                         t_render_shape_pucker_moves_vertices_outward);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);
