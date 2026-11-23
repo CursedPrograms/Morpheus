@@ -690,6 +690,50 @@ PropGroup shapeFill(Ids& ids, std::array<double, 4> color) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_stroke, stroke_taper and stroke_wave
+PropGroup shapeStrokeTaper(Ids& ids) {
+    PropGroup group = ids.group("taper", "Taper");
+    group.with(ids.prop("units", "Length Units", Value::Enum(0)).with_ui(ParamUi::make_popup({"Pixels", "Percent"})));
+    group.with(ids.prop("startLength", "Start Length", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("endLength", "End Length", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("startWidth", "Start Width", Value::Scalar(100.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("endWidth", "End Width", Value::Scalar(100.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("startEase", "Start Ease", Value::Scalar(0.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("endEase", "End Ease", Value::Scalar(0.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    return group;
+}
+
+PropGroup shapeStrokeWave(Ids& ids) {
+    PropGroup group = ids.group("wave", "Wave");
+    group.with(ids.prop("amount", "Amount", Value::Scalar(0.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0, 1)));
+    group.with(ids.prop("units", "Units", Value::Enum(0)).with_ui(ParamUi::make_popup({"Pixels", "Cycles"})));
+    group.with(ids.prop("wavelength", "Wavelength", Value::Scalar(20.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("cycles", "Cycles", Value::Scalar(10.0)).with_ui(ParamUi::make_slider(0.0, 1000.0, 0.0, 50.0, 1)));
+    group.with(ids.prop("phase", "Phase", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Angle}));
+    return group;
+}
+
+PropGroup shapeStroke(Ids& ids, std::array<double, 4> color, double width) {
+    PropGroup group = ids.group("stroke", "Stroke 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("blend", "Blend Mode", Value::Enum(0)).with_ui(ParamUi{ParamUiKind::Hidden}));
+    group.with(ids.prop("composite", "Composite", Value::Enum(0)).with_ui(ParamUi::make_popup({"Below Previous in Same Group", "Above Previous in Same Group"})));
+    group.with(ids.prop("color", "Color", Value::Color(color)).with_ui(ParamUi{ParamUiKind::Color}));
+    group.with(ids.prop("opacity", "Opacity", Value::Scalar(100.0)).with_ui(ParamUi::make_slider(0.0, 100.0, 0.0, 100.0)));
+    group.with(ids.prop("width", "Stroke Width", Value::Scalar(width)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("cap", "Line Cap", Value::Enum(0)).with_ui(ParamUi::make_popup({"Butt Cap", "Round Cap", "Projecting Cap"})));
+    group.with(ids.prop("join", "Line Join", Value::Enum(0)).with_ui(ParamUi::make_popup({"Miter Join", "Round Join", "Bevel Join"})));
+    group.with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)));
+    PropGroup dashes = ids.group("dashes", "Dashes");
+    dashes.with(ids.prop("dash", "Dash", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    dashes.with(ids.prop("gap", "Gap", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    dashes.with(ids.prop("offset", "Offset", Value::Scalar(0.0)).with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(std::move(dashes));
+    group.with(shapeStrokeTaper(ids));
+    group.with(shapeStrokeWave(ids));
+    return group;
+}
+
 PropGroup mask(Ids& ids, const std::string& name, ShapePath path, MaskMode mode, std::array<uint8_t, 3> color) {
     PropGroup g = ids.group("mask", name);
     g.kind.tag = GroupKindTag::Mask;

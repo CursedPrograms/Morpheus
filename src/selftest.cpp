@@ -2064,6 +2064,24 @@ static Layer make_solid(Proj& p, const Composition& comp, std::array<float, 3> c
     return l;
 }
 
+static Layer make_shape_layer(Proj& project, const Composition& comp) {
+    Layer layer;
+    layer.id.v = project.alloc();
+    layer.name = "Shape";
+    layer.kind = LayerKind::Shape;
+    layer.width = comp.width;
+    layer.height = comp.height;
+    layer.inPt = Tick::ZERO;
+    layer.outPt = comp.duration;
+    layer.startTime = Tick::ZERO;
+    layer.xform.posX = static_cast<float>(comp.width) * 0.5f;
+    layer.xform.posY = static_cast<float>(comp.height) * 0.5f;
+    uint64_t next = project.nextId;
+    layer.initProps(&next, 0.0, 0.0, layer.xform.posX, layer.xform.posY);
+    project.nextId = next;
+    return layer;
+}
+
 // after EffectCraft crates/engine/src/cmd/prop.rs move_key_refs
 static bool t_timeline_group_key_move() {
     auto [project, compId, comp] = render_setup();
@@ -2118,6 +2136,75 @@ static bool t_timeline_group_key_move() {
     return lockedOpacity && lockedOpacity->keys.size() == 1 &&
         lockedOpacity->keys.front().time == first &&
         lockedOpacity->keys.front().value == KeyframeModel::Value::Scalar(75.0);
+}
+
+// after EffectCraft crates/render/src/tests.rs shape_layer_draws_fill_and_stroke
+static bool t_render_shape_fill_and_stroke() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    auto rect = Props::Build::shapeRect(ids, {40.0, 40.0}, {0.0, 0.0}, 0.0);
+    auto stroke = Props::Build::shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 4.0);
+    auto fill = Props::Build::shapeFill(ids, {1.0, 0.0, 0.0, 1.0});
+    std::vector<Props::PropGroup> items;
+    items.push_back(std::move(rect));
+    items.push_back(std::move(stroke));
+    items.push_back(std::move(fill));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.push_back(Props::Node(Props::Build::shapeGroup(ids, "Rectangle 1", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const Raster::Px centre = image.get(100, 50);
+    const Raster::Px edge = image.get(80, 50);
+    return centre[0] > 0.99f && centre[1] < 0.01f &&
+        edge[1] > 0.5f && edge[3] > 0.5f;
+}
+
+// after EffectCraft crates/render/src/shapes.rs collect_in rect, ellipse, path and group
+static bool t_render_shape_primitives_and_group_transform() {
+    auto [project, compId, comp] = render_setup();
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    auto fillGroup = [&](Props::PropGroup path, std::array<double, 4> color,
+                         const std::string& name) {
+        std::vector<Props::PropGroup> items;
+        items.push_back(std::move(path));
+        items.push_back(Props::Build::shapeFill(ids, color));
+        return Props::Build::shapeGroup(ids, name, std::move(items));
+    };
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    contents->children.push_back(Props::Node(fillGroup(
+        Props::Build::shapeRect(ids, {24.0, 24.0}, {-50.0, 0.0}, 0.0),
+        {1.0, 0.0, 0.0, 1.0}, "Rectangle")));
+    contents->children.push_back(Props::Node(fillGroup(
+        Props::Build::shapeEllipse(ids, {24.0, 24.0}, {0.0, 0.0}),
+        {0.0, 1.0, 0.0, 1.0}, "Ellipse")));
+    const KeyframeModel::ShapePath triangle = KeyframeModel::ShapePath::polygon(
+        {{38.0, -12.0}, {62.0, -12.0}, {50.0, 12.0}}, true);
+    contents->children.push_back(Props::Node(fillGroup(
+        Props::Build::shapePath(ids, triangle), {0.0, 0.0, 1.0, 1.0}, "Path")));
+
+    std::vector<Props::PropGroup> nestedItems;
+    nestedItems.push_back(Props::Build::shapeRect(ids, {10.0, 10.0}, {0.0, 0.0}, 0.0));
+    nestedItems.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 0.0, 1.0}));
+    Props::PropGroup nested = Props::Build::shapeGroup(ids, "Nested", std::move(nestedItems));
+    Props::Property* position = nested.prop_mut("transform/position");
+    Props::Property* opacity = nested.prop_mut("transform/opacity");
+    if (!position || !opacity) return false;
+    position->value = KeyframeModel::Value::Vec2(0.0, 20.0);
+    opacity->value = KeyframeModel::Value::Scalar(50.0);
+    contents->children.push_back(Props::Node(std::move(nested)));
+
+    project.compositions[0].layers.push_back(std::move(layer));
+    const Raster::Image image = Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+    const Raster::Px rectangle = image.get(50, 50);
+    const Raster::Px ellipse = image.get(100, 50);
+    const Raster::Px path = image.get(150, 50);
+    const Raster::Px group = image.get(100, 70);
+    return rectangle[0] > 0.99f && ellipse[1] > 0.99f && path[2] > 0.99f &&
+        group[3] > 0.49f && group[3] < 0.51f;
 }
 
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
@@ -2464,6 +2551,8 @@ void registerAll() {
     add("timeline::key_selection_adds_and_toggles",                t_timeline_key_selection_add_and_toggle);
     add("timeline::group_key_move_preserves_selection_and_locks",   t_timeline_group_key_move);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
+    add("render::shape_layer_draws_fill_and_stroke",                t_render_shape_fill_and_stroke);
+    add("render::shape_primitives_and_group_transform",             t_render_shape_primitives_and_group_transform);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);
