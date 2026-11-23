@@ -15,6 +15,7 @@
 #include "props.h"
 #include "raster.h"
 #include "render.h"
+#include "timeline.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -1835,6 +1836,64 @@ static bool t_warp_downscale() {
 // RENDER TESTS (after EffectCraft crates/render/src/tests.rs)
 // =====================================================================
 
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs fit_pps
+static bool t_timeline_fit_and_zoom() {
+    const double fit = Timeline::fitPps(510.0, 10.0);
+    if (std::abs(fit - 50.0) > 1e-9) return false;
+    double start = 0.0, pps = 0.0;
+    Timeline::setZoom(start, pps, 100.0, fit, 10.0, 5.0, 100.0);
+    if (std::abs(pps - 100.0) > 1e-9 || std::abs(start - 4.0) > 1e-9) return false;
+    Timeline::setZoom(start, pps, fit, fit, 10.0, 5.0, 100.0);
+    if (pps != 0.0 || start != 0.0) return false;
+    return Timeline::fitPps(0.0, 0.0) == 1.0;
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline/tests.rs the_view_pages_to_the_cti
+static bool t_timeline_pages_to_cti() {
+    if (Timeline::pageToCti(10.0, 5.0, 60.0, 12.0) != 10.0) return false;
+    if (Timeline::pageToCti(10.0, 5.0, 60.0, 16.0) != 16.0) return false;
+    if (Timeline::pageToCti(10.0, 5.0, 60.0, 3.0) != 3.0) return false;
+    if (Timeline::pageToCti(10.0, 5.0, 60.0, 58.0) != 55.0) return false;
+    if (Timeline::pageToCti(10.0, 80.0, 60.0, 95.0) != 0.0) return false;
+    if (Timeline::centeredOn(5.0, 60.0, 12.0) != 9.5) return false;
+    return Timeline::pageToCti(10.0, std::numeric_limits<double>::quiet_NaN(), 60.0, 95.0) == 10.0;
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline/tests.rs cti_snaps_to_the_nearest_candidate
+static bool t_timeline_snap_and_pixel_mapping() {
+    const double targets[] = {0.0, 1.0, 2.0};
+    if (Timeline::snapTime(targets, 3, 1.04, 0.1) != 1.0) return false;
+    if (Timeline::snapTime(targets, 3, 1.5, 0.1) != 1.5) return false;
+    if (Timeline::snapTime(targets, 3, 1.5, 0.5) != 1.0) return false;
+    const auto at = Timeline::timeAtPixel(150.0, 100.0, 2.0, 50.0,
+                                          FrameRate::FPS_30, Tick::from_seconds_f64(10.0));
+    return at == FrameRate::FPS_30.tick_of(90);
+}
+
+// after EffectCraft crates/ui-egui/tests/it/ui_timeline_trim.rs dragging_bar_ends_trims_in_and_out
+static bool t_timeline_trim_and_move_layer() {
+    using Timeline::BarEdit;
+    using Timeline::LayerTiming;
+    const Tick frame = FrameRate::FPS_30.frame_duration();
+    const LayerTiming original{Tick::from_seconds_f64(2.0), Tick::from_seconds_f64(6.0), Tick::ZERO};
+    const auto trimOut = Timeline::editLayerTiming(original, BarEdit::TrimOut,
+        Tick::from_seconds_f64(-1.0), frame, Tick::from_seconds_f64(10.0));
+    if (trimOut.in != original.in || trimOut.out != Tick::from_seconds_f64(5.0) || trimOut.start != original.start)
+        return false;
+    const auto trimIn = Timeline::editLayerTiming(original, BarEdit::TrimIn,
+        Tick::from_seconds_f64(1.0), frame, Tick::from_seconds_f64(10.0));
+    if (trimIn.in != Tick::from_seconds_f64(3.0) || trimIn.out != original.out || trimIn.start != original.start)
+        return false;
+    const auto moved = Timeline::editLayerTiming(original, BarEdit::Move,
+        Tick::from_seconds_f64(2.0), frame, Tick::from_seconds_f64(10.0));
+    if (moved.in != Tick::from_seconds_f64(4.0) || moved.out != Tick::from_seconds_f64(8.0) ||
+        moved.start != Tick::from_seconds_f64(2.0))
+        return false;
+    const auto minimum = Timeline::editLayerTiming(original, BarEdit::TrimOut,
+        Tick::from_seconds_f64(-20.0), frame, Tick::from_seconds_f64(10.0));
+    return minimum.out == original.in + frame;
+}
+
 static std::tuple<Proj, uint64_t, Composition> render_setup() {
     Proj p;
     p.nextId = 1;
@@ -2042,6 +2101,22 @@ static bool t_render_track_matte_kinds() {
     return true;
 }
 
+// after EffectCraft crates/render/src/frames.rs cached frame reuse and eviction semantics.
+static bool t_render_frame_cache() {
+    const size_t oneFrame = 4 * sizeof(Raster::Px);
+    Render::FrameCache cache(oneFrame);
+    cache.insert(7, 0, 0.5, Raster::Image::filled(2, 2, {1, 0, 0, 1}));
+    if (!cache.find(7, 0, 0.5) || cache.size() != 1) return false;
+    cache.insert(7, 1, 0.5, Raster::Image::filled(2, 2, {0, 1, 0, 1}));
+    const Raster::Image* last = cache.find(7, 1, 0.5);
+    if (!last || cache.size() != 1 || cache.find(7, 0, 0.5)) return false;
+    if (last->get(0, 0) != Raster::Px{0, 1, 0, 1}) return false;
+    cache.insert(7, 1, 0.5, Raster::Image::filled(3, 3, {1, 0, 0, 1}));
+    if (cache.find(7, 1, 0.5) || cache.size() != 0) return false;
+    cache.clear();
+    return cache.size() == 0;
+}
+
 // =====================================================================
 // Registration
 // =====================================================================
@@ -2136,6 +2211,11 @@ void registerAll() {
     add("warp::quantize_while_blending_matches_quantizing_after", t_warp_quantize_matches);
     add("warp::accumulate_matches_per_sample_images",           t_warp_accumulate);
     add("warp::downscale_preserves_average",                    t_warp_downscale);
+    // Timeline tests (after EffectCraft crates/ui-egui/src/panels/timeline.rs)
+    add("timeline::fit_and_zoom_preserve_the_anchor",            t_timeline_fit_and_zoom);
+    add("timeline::playback_pages_the_view_to_the_cti",           t_timeline_pages_to_cti);
+    add("timeline::scrubbing_snaps_to_frames_and_nearest_targets", t_timeline_snap_and_pixel_mapping);
+    add("timeline::bar_drags_trim_and_move_frame_accurately",   t_timeline_trim_and_move_layer);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
@@ -2145,6 +2225,7 @@ void registerAll() {
     add("render::first_intersect_and_darken_keep_their_rectangle", t_render_first_intersect_darken);
     add("render::track_matte_alpha",                            t_render_track_matte_alpha);
     add("render::track_matte_kinds_keep_and_invert",            t_render_track_matte_kinds);
+    add("render::frame_cache_reuses_and_evicts_within_budget",   t_render_frame_cache);
 }
 
 } // namespace SelfTest

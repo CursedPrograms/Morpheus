@@ -28,15 +28,20 @@ None.
   - Exact time integer ticks (254,016,000,000 per second), FrameRate, TimeRange, timecode roundtrips (16 tests).
   - Project model: compositions, layer kinds, full Switches, Transform, JSON serialization (6 tests).
 
+- **Phase 4 Timeline interaction core (`crates/ui-egui/src/panels/timeline.rs`)**:
+  - Layer duration bars use composition-time mapping and label colours; the playhead is frame-accurate and scrubs from the ruler. Bar drags move layers or trim In/Out while keeping `startTime` coherent, with Shift snapping to other layer edges.
+  - Layer rows fold their property groups; work area, time ruler, zoom, transport and playback are connected to the software renderer. `Render::FrameCache` is bounded by bytes and reused by the Composition viewer and Preview cache indicator.
+  - Added `--script timeline --capture ...` and ported helper/test behavior from `fit_pps`, `set_zoom`, `the_view_pages_to_the_cti`, `cti_snaps_to_the_nearest_candidate`, and `dragging_bar_ends_trims_in_and_out`. The Release build and all 96/96 self-tests pass; the capture was visually checked.
+  - Not yet ported from the much larger Timeline panel: layer/group reorder, multi-selection and marquee, marker editing, effect/source rows, full column/switch menus, property reveal/search shortcuts, and graph/keyframe interaction. Phase 5 covers the keyframe and graph-editor portion.
+
 ## Kiro asks
 
-Phase 1 layout and Phase 2 project/time model, property tree, and keyframe base are ported with exact EffectCraft icons and 59/59 tests passing.
-Next step: Phase 3 (frame rendering in Composition panel).
+EffectCraft source access was restored on 2026-11-23. Phase 4's requested core Timeline interactions now build and pass 96/96 self-tests. Phase 5 (keyframe UI and graph editor) is next; the remaining Timeline features above are not blockers to that work.
 
 **Phase 1** (`5518c0f`): the skeleton window with all seven panels (Project, Composition, Timeline, Effect Controls,
 Tools, Preview, Info), menu bar, splash screen, 12 languages, build and install scripts, and the repo files
 (README.md, index.html + site/style.css + site/site.js, .github/FUNDING.yml, link.bf, description and topics set
 with `gh repo edit`, Pages turned on from main/root).
 
-**Phase 2** (`fd9ccfb`, `c6221bc`, current): the project model, exact time ticks, property tree, keyframe base, compositions, layers, switches, transforms,
+**Phase 2** (`fd9ccfb`, `c6221bc`): the project model, exact time ticks, property tree, keyframe base, compositions, layers, switches, transforms,
 in/out points, and JSON save/load. Test: `Morpheus.exe --selftest` (59/59 pass).

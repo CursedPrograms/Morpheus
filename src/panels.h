@@ -9,6 +9,7 @@
 #pragma once
 #include <string>
 #include <functional>
+#include <cstdint>
 
 // Forward declaration for the project model.
 namespace Project { struct ProjectData; }
@@ -30,5 +31,11 @@ void init();
 
 // Draw all panels for the current frame.  proj may be nullptr while no project is open.
 void draw(Project::ProjectData* proj, const Actions& actions);
+
+// Invalidate cached frames after replacing or editing a project.
+void invalidateFrameCache();
+
+// Select and expand a layer for scripted Timeline captures.
+void prepareTimelineCapture(uint64_t layerId);
 
 }  // namespace Panels

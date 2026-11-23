@@ -18,7 +18,9 @@
 #include <vector>
 #include <optional>
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <list>
 
 namespace Render {
 
@@ -45,6 +47,29 @@ public:
 
     // Apply masks in layer space
     static void apply_masks(const Project::Layer& layer, Raster::Image& img, Project::Tick t, double scale);
+};
+
+// A byte-bounded LRU cache of rendered composition frames for timeline playback.
+class FrameCache {
+public:
+    explicit FrameCache(size_t budgetBytes = 128u * 1024u * 1024u);
+
+    const Raster::Image* find(uint64_t compId, int64_t frame, double scale);
+    void insert(uint64_t compId, int64_t frame, double scale, Raster::Image image);
+    void clear();
+    size_t size() const { return frames_.size(); }
+
+private:
+    struct Entry {
+        uint64_t compId;
+        int64_t frame;
+        double scale;
+        Raster::Image image;
+    };
+
+    size_t budgetBytes_;
+    size_t usedBytes_ = 0;
+    std::list<Entry> frames_;
 };
 
 // Top-level convenience function matching EffectCraft unit tests:

@@ -79,6 +79,7 @@ static void setTitle() {
 static void newProject() {
     delete s_proj;
     s_proj = new Project::ProjectData(Project::ProjectData::makeNew());
+    Panels::invalidateFrameCache();
     setTitle();
 }
 
@@ -87,6 +88,7 @@ static void openProject(const std::string& path) {
     if (Project::load(*p, path)) {
         delete s_proj;
         s_proj = p;
+        Panels::invalidateFrameCache();
         setTitle();
     } else {
         delete p;
@@ -176,6 +178,39 @@ void script(const std::string& name) {
     if (name == "skeleton") {
         // Phase 1 test: just open the window; a screenshot is enough.
         SDL_Log("script skeleton: window open, capturing screenshot.");
+    } else if (name == "timeline") {
+        newProject();
+        if (s_proj && !s_proj->compositions.empty()) {
+            auto& comp = s_proj->compositions[0];
+            const auto makeLayer = [&](const char* layerName, float r, float g, float b,
+                                       Project::Tick in, Project::Tick out) {
+                Project::Layer layer;
+                layer.id.v = s_proj->alloc();
+                layer.name = layerName;
+                layer.kind = Project::LayerKind::Solid;
+                layer.width = 480;
+                layer.height = 270;
+                layer.solidR = r;
+                layer.solidG = g;
+                layer.solidB = b;
+                layer.inPt = in;
+                layer.outPt = out;
+                layer.startTime = in;
+                layer.xform.anchorX = 240;
+                layer.xform.anchorY = 135;
+                layer.xform.posX = 960;
+                layer.xform.posY = 540;
+                layer.initProps(&s_proj->nextId, 240, 135, 960, 540);
+                comp.layers.push_back(std::move(layer));
+            };
+            const auto sec = [](double value) { return Project::Tick::from_seconds_f64(value); };
+            makeLayer("Background", 0.08f, 0.10f, 0.16f, sec(0.0), comp.duration);
+            makeLayer("Title Card", 0.00f, 0.48f, 0.72f, sec(1.0), sec(7.0));
+            makeLayer("Accent", 0.82f, 0.27f, 0.22f, sec(3.0), sec(9.0));
+            s_proj->dirty = true;
+            Panels::prepareTimelineCapture(comp.layers[1].id.v);
+            SDL_Log("script timeline: rendered 3 timeline layers with editable timing.");
+        }
     } else if (name == "new_project") {
         // Phase 2 test: create a new project, add a solid layer, save to a temp file,
         // reload it, and verify the round-trip is correct.

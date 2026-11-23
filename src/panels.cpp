@@ -33,6 +33,7 @@
 #include "lang.h"
 #include "icons.h"
 #include "render.h"
+#include "timeline.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -49,6 +50,9 @@
 #include <cstdio>
 #include <cstring>
 #include <string>
+#include <unordered_set>
+#include <cmath>
+#include <limits>
 
 // Suppress min/max macro conflicts.
 #ifdef min
@@ -121,6 +125,49 @@ static int s_centreTop = 0;  // 0=Composition 1=Layer
 static int s_centreBot = 0;  // 0=Timeline 1=RenderQueue
 static int s_rightBot  = 0;  // 0=Properties 1=Align 2=Audio 3=EffectsPresets
 static const Actions* g_actions = nullptr;
+static Project::Tick s_currentTime = Project::Tick::ZERO;
+static bool s_playing = false;
+static bool s_loop = true;
+static double s_timelineStart = 0.0;
+static double s_timelinePps = 0.0;
+static float s_timelineZoom = 0.0f;
+static float s_timelineScroll = 0.0f;
+static uint64_t s_selectedLayer = 0;
+static std::unordered_set<uint64_t> s_openLayers;
+static std::unordered_set<uint64_t> s_openGroups;
+static Render::FrameCache s_frameCache;
+static uint64_t s_cacheGeneration = 0;
+
+void invalidateFrameCache() {
+    s_frameCache.clear();
+    ++s_cacheGeneration;
+}
+
+void prepareTimelineCapture(uint64_t layerId) {
+    s_selectedLayer = layerId;
+    s_openLayers.clear();
+    s_openLayers.insert(layerId);
+    s_openGroups.clear();
+    s_timelineStart = 0.0;
+    s_timelinePps = 0.0;
+    s_timelineZoom = 0.0f;
+    s_currentTime = Project::Tick::ZERO;
+    s_playing = false;
+    invalidateFrameCache();
+}
+
+static void setCurrentTime(Project::Tick time) {
+    s_currentTime = time;
+}
+
+static const Raster::Image* cachedFrame(const Project::Project* proj, const Project::Composition& comp) {
+    const int64_t frame = comp.frameRate.frame_at(s_currentTime);
+    if (const Raster::Image* cached = s_frameCache.find(comp.id.v, frame, 0.5))
+        return cached;
+    Raster::Image rendered = Render::Renderer::render_frame(*proj, comp.id.v, comp.frameRate.tick_of(frame), 0.5);
+    s_frameCache.insert(comp.id.v, frame, 0.5, std::move(rendered));
+    return s_frameCache.find(comp.id.v, frame, 0.5);
+}
 
 // Apply the Atelier ImGui style (call once).
 // after EffectCraft crates/ui-egui/src/theme.rs
@@ -381,6 +428,9 @@ static void drawCompositionViewer(Project::Project* proj) {
     }
 
     static GLuint s_compTexture = 0;
+    static uint64_t s_textureComp = 0;
+    static int64_t s_textureFrame = std::numeric_limits<int64_t>::min();
+    static uint64_t s_textureGeneration = 0;
 
     // Centered composition canvas frame (matches comp aspect ratio or 16:9)
     float aspect = 16.0f / 9.0f;
@@ -401,16 +451,23 @@ static void drawCompositionViewer(Project::Project* proj) {
     if (proj && proj->activeComp >= 0 && (size_t)proj->activeComp < proj->compositions.size()) {
         const auto& comp = proj->compositions[(size_t)proj->activeComp];
         if (!comp.layers.empty()) {
-            Raster::Image frame = Render::render_frame(proj, comp.id.v, Project::Tick::ZERO, 1.0);
-            if (!frame.is_empty()) {
-                std::vector<uint8_t> rgba = frame.to_rgba8();
-                if (s_compTexture == 0) {
-                    glGenTextures(1, &s_compTexture);
+            const int64_t frameNumber = comp.frameRate.frame_at(s_currentTime);
+            const Raster::Image* frame = cachedFrame(proj, comp);
+            if (frame && !frame->is_empty()) {
+                if (s_textureComp != comp.id.v || s_textureFrame != frameNumber ||
+                    s_textureGeneration != s_cacheGeneration) {
+                    std::vector<uint8_t> rgba = frame->to_rgba8();
+                    if (s_compTexture == 0) {
+                        glGenTextures(1, &s_compTexture);
+                    }
+                    glBindTexture(GL_TEXTURE_2D, s_compTexture);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)frame->width, (GLsizei)frame->height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+                    s_textureComp = comp.id.v;
+                    s_textureFrame = frameNumber;
+                    s_textureGeneration = s_cacheGeneration;
                 }
-                glBindTexture(GL_TEXTURE_2D, s_compTexture);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)frame.width, (GLsizei)frame.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
                 has_rendered = true;
             }
         }
@@ -523,27 +580,61 @@ static void drawTimeline(Project::Project* proj) {
         ImGui::TextDisabled("%s", L("No composition active."));
         return;
     }
-    const auto& comp = proj->compositions[(size_t)proj->activeComp];
+    auto& comp = proj->compositions[(size_t)proj->activeComp];
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float avW = ImGui::GetContentRegionAvail().x;
     const float avH = ImGui::GetContentRegionAvail().y;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
 
-    // --- Timeline header row ---
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs current time + toolbar
+    struct Row {
+        enum class Kind { Layer, Group, Property } kind;
+        size_t layer;
+        Props::PropGroup* group = nullptr;
+        Props::Property* property = nullptr;
+        int depth = 0;
+    };
+    std::vector<Row> rows;
+    std::function<void(size_t, Props::PropGroup&, int)> appendGroup;
+    appendGroup = [&](size_t layerIndex, Props::PropGroup& group, int depth) {
+        rows.push_back({Row::Kind::Group, layerIndex, &group, nullptr, depth});
+        const bool open = group.name == "Transform" || s_openGroups.count(group.uid) != 0;
+        if (!open) return;
+        for (auto& node : group.children) {
+            if (auto* property = node.as_prop_mut()) {
+                rows.push_back({Row::Kind::Property, layerIndex, nullptr, property, depth + 1});
+            } else if (auto* child = node.as_group_mut()) {
+                appendGroup(layerIndex, *child, depth + 1);
+            }
+        }
+    };
+    for (size_t i = 0; i < comp.layers.size(); ++i) {
+        auto& layer = comp.layers[i];
+        if (comp.hideShy && layer.switches.shy) continue;
+        rows.push_back({Row::Kind::Layer, i});
+        if (s_openLayers.count(layer.id.v) == 0) continue;
+        for (auto& node : layer.props.children) {
+            if (auto* property = node.as_prop_mut()) {
+                rows.push_back({Row::Kind::Property, i, nullptr, property, 1});
+            } else if (auto* group = node.as_group_mut()) {
+                appendGroup(i, *group, 1);
+            }
+        }
+    }
+
+    // after EffectCraft crates/ui-egui/src/panels/timeline.rs header_timecode
     const float hdrH = 28.0f;
     dl->AddRectFilled(p0, {p0.x + avW, p0.y + hdrH}, C_APP_BG);
 
-    // Current-time display (blue timecode)
     const Project::FrameRate fr = comp.frameRate;
-    std::string tc = Project::format_timecode_ae(0, fr, false);
+    const int64_t frameNow = fr.frame_at(s_currentTime);
+    std::string tc = Project::format_timecode_ae(frameNow, fr, false);
     ImGui::SetCursorScreenPos({p0.x + 8.0f, p0.y + 5.0f});
     ImGui::TextColored(col4(C_BLUE), "%s", tc.c_str());
     ImGui::SameLine(0, 4);
-    char fpsBuf[64]; snprintf(fpsBuf, sizeof fpsBuf, "(00000 / %s fps)", fr.label().c_str());
+    char fpsBuf[64]; snprintf(fpsBuf, sizeof fpsBuf, "(%05lld / %s fps)",
+                               (long long)frameNow, fr.label().c_str());
     ImGui::TextDisabled("%s", fpsBuf);
 
-    // Search bar
     ImGui::SameLine(avW * 0.38f - 130.0f);
     static char s_tlsearch[64] = {};
     Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 8.0f, p0.y + hdrH * 0.5f}, 12.0f, Icons::Icon::Search, C_DIM);
@@ -551,41 +642,43 @@ static void drawTimeline(Project::Project* proj) {
     ImGui::SetNextItemWidth(100.0f);
     ImGui::InputTextWithHint("##tlsearch", L("Search"), s_tlsearch, sizeof s_tlsearch);
 
-    // Right-side toolbar switches: Shy, Frame Blend, Motion Blur, Graph Editor
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs toolbar switches
     ImGui::SameLine(avW - 104.0f);
     ImGui::SetCursorScreenPos({p0.x + avW - 104.0f, p0.y + 3.0f});
-    if (Icons::iconButton("##tl_shy", Icons::Icon::Shy, comp.hideShy, {22, 22})) {}
+    if (Icons::iconButton("##tl_shy", Icons::Icon::Shy, comp.hideShy, {22, 22})) {
+        comp.hideShy = !comp.hideShy;
+        proj->dirty = true;
+        invalidateFrameCache();
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Hide all layers for which the Shy switch is set"));
-    ImGui::SameLine(0, 2);
-    if (Icons::iconButton("##tl_fb", Icons::Icon::FrameBlend, comp.enableFrameBlending, {22, 22})) {}
+    if (Icons::iconButton("##tl_fb", Icons::Icon::FrameBlend, comp.enableFrameBlending, {22, 22})) {
+        comp.enableFrameBlending = !comp.enableFrameBlending;
+        proj->dirty = true;
+        invalidateFrameCache();
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Enable Frame Blending"));
-    ImGui::SameLine(0, 2);
-    if (Icons::iconButton("##tl_mb", Icons::Icon::MotionBlur, comp.enableMotionBlur, {22, 22})) {}
+    if (Icons::iconButton("##tl_mb", Icons::Icon::MotionBlur, comp.enableMotionBlur, {22, 22})) {
+        comp.enableMotionBlur = !comp.enableMotionBlur;
+        proj->dirty = true;
+        invalidateFrameCache();
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Enable Motion Blur"));
-    ImGui::SameLine(0, 2);
     if (Icons::iconButton("##tl_graph", Icons::Icon::Graph, false, {22, 22})) {}
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Graph Editor (Shift+F3)"));
 
     hLine(dl, p0.x, p0.x + avW, p0.y + hdrH);
 
-    // --- Layer columns header ---
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs COLUMNS
     const float colHdrH = 20.0f;
     const ImVec2 chp = {p0.x, p0.y + hdrH};
     dl->AddRectFilled(chp, {chp.x + avW, chp.y + colHdrH}, C_APP_BG);
 
-    // Column icons: Eye, Speaker, Solo, Lock
     Icons::paintCentered(dl, {chp.x + 10.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Eye, C_DIM);
     Icons::paintCentered(dl, {chp.x + 24.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Speaker, C_DIM);
     Icons::paintCentered(dl, {chp.x + 38.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Solo, C_DIM);
     Icons::paintCentered(dl, {chp.x + 52.0f, chp.y + colHdrH * 0.5f}, 12.0f, Icons::Icon::Lock, C_DIM);
-    // Label diamond
     Icons::paintCentered(dl, {chp.x + 68.0f, chp.y + colHdrH * 0.5f}, 10.0f, Icons::Icon::Keyframe, C_DIM);
     dl->AddText({chp.x + 80.0f, chp.y + 3.0f}, C_DIM, "#");
     dl->AddText({chp.x + 100.0f, chp.y + 3.0f}, C_DIM, L("Layer Name"));
 
-    // Switches headers
     const float swBaseX = avW * 0.38f - 110.0f;
     Icons::paintCentered(dl, {chp.x + swBaseX, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Shy, C_DIM);
     Icons::paintCentered(dl, {chp.x + swBaseX + 13.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Collapse, C_DIM);
@@ -596,154 +689,277 @@ static void drawTimeline(Project::Project* proj) {
     Icons::paintCentered(dl, {chp.x + swBaseX + 78.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Adjustment, C_DIM);
     Icons::paintCentered(dl, {chp.x + swBaseX + 91.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::Cube, C_DIM);
 
-    // Parent & Link
     dl->AddText({chp.x + swBaseX + 108.0f, chp.y + 3.0f}, C_DIM, L("Parent & Link"));
     Icons::paintCentered(dl, {chp.x + swBaseX + 175.0f, chp.y + colHdrH * 0.5f}, 11.0f, Icons::Icon::PickWhip, C_DIM);
 
     hLine(dl, chp.x, chp.x + avW, chp.y + colHdrH);
 
-    // --- Split: Left side layers, Right side tracks ---
     const float botBarH = 22.0f;
-    const float layerAreaH = avH - hdrH - colHdrH - botBarH - 2.0f;
-    const float rulerH = 20.0f;
+    const float layerAreaH = std::max(1.0f, avH - hdrH - colHdrH - botBarH - 2.0f);
+    const float rulerH = 24.0f;
     const float leftSideW = avW * 0.38f;
     const float rightSideW = avW - leftSideW;
+    const float rowTop = p0.y + hdrH + colHdrH;
+    const float barAreaX = p0.x + leftSideW + 1.0f;
+    const float barAreaW = std::max(1.0f, rightSideW - 1.0f);
+    const double duration = std::max(0.01, comp.durationSeconds());
+    const double fitPps = Timeline::fitPps(barAreaW, duration);
+    const double pps = s_timelinePps > 0.0 ? std::max(fitPps, s_timelinePps) : fitPps;
+    const double visible = barAreaW / pps;
+    if (s_playing && s_timelinePps > 0.0)
+        s_timelineStart = Timeline::pageToCti(s_timelineStart, visible, duration, s_currentTime.seconds());
+    s_timelineStart = std::clamp(s_timelineStart, 0.0, std::max(0.0, duration - visible));
 
-    // Left child (layers list)
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs layer rows
-    ImGui::SetCursorScreenPos({p0.x, p0.y + hdrH + colHdrH});
-    ImGui::BeginChild("##tlayers", {leftSideW, layerAreaH}, false, ImGuiWindowFlags_NoScrollbar);
-    for (int i = 0; i < (int)comp.layers.size(); ++i) {
-        const auto& layer = comp.layers[(size_t)i];
-        ImGui::PushID(i);
+    // Layer outline with folded property rows.
+    ImGui::SetCursorScreenPos({p0.x, rowTop});
+    ImGui::SetNextWindowScroll({0.0f, s_timelineScroll});
+    ImGui::BeginChild("##tlayers", {leftSideW, layerAreaH}, false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rulerH);
+    bool resizeCursor = false;
+    for (size_t ri = 0; ri < rows.size(); ++ri) {
+        const Row& row = rows[ri];
+        const Project::Layer& layer = comp.layers[row.layer];
         const ImVec2 rp = ImGui::GetCursorScreenPos();
-
-        // Switches icons on left
-        Icons::paintCentered(dl, {rp.x + 10.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Eye, layer.switches.video ? C_TEXT : C_FAINT);
-        Icons::paintCentered(dl, {rp.x + 24.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Speaker, layer.switches.audio ? C_TEXT : C_FAINT);
-        Icons::paintCentered(dl, {rp.x + 38.0f, rp.y + ROW_H * 0.5f}, 12.0f, Icons::Icon::Solo, layer.switches.solo ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {rp.x + 52.0f, rp.y + ROW_H * 0.5f}, 12.0f, layer.switches.locked ? Icons::Icon::Lock : Icons::Icon::LockOpen, layer.switches.locked ? C_TEXT : C_FAINT);
-
-        // Label colour swatch
-        const ImU32 swCol = labelColor((i + 1) % 17);
-        dl->AddRectFilled({rp.x + 64.0f, rp.y + 4.0f}, {rp.x + 74.0f, rp.y + ROW_H - 4.0f}, swCol, 1.0f);
-
-        // Layer #
-        char num[8]; snprintf(num, sizeof num, "%d", i + 1);
-        dl->AddText({rp.x + 80.0f, rp.y + 2.0f}, C_DIM, num);
-
-        // Exact Layer type icon from Icons::Icon
-        Icons::Icon typeIcon = Icons::Icon::Solid;
-        switch (layer.kind) {
-            case Project::LayerKind::Text:        typeIcon = Icons::Icon::TextLayer; break;
-            case Project::LayerKind::Shape:       typeIcon = Icons::Icon::ShapeLayer; break;
-            case Project::LayerKind::Null:        typeIcon = Icons::Icon::Null; break;
-            case Project::LayerKind::Camera:      typeIcon = Icons::Icon::Camera; break;
-            case Project::LayerKind::Light:       typeIcon = Icons::Icon::Light; break;
-            case Project::LayerKind::Footage:     typeIcon = Icons::Icon::Footage; break;
+        ImDrawList* rowDl = ImGui::GetWindowDrawList();
+        if (row.kind == Row::Kind::Layer) {
+            ImGui::PushID((int)layer.id.v);
+            const bool isSelected = s_selectedLayer == layer.id.v;
+            if (isSelected)
+                rowDl->AddRectFilled(rp, {rp.x + leftSideW, rp.y + ROW_H}, C_DEEP);
+            ImGui::SetCursorScreenPos(rp);
+            ImGui::InvisibleButton("##layer", {leftSideW, ROW_H});
+            if (ImGui::IsItemClicked())
+                s_selectedLayer = layer.id.v;
+            const ImVec2 center{rp.x + 11.0f, rp.y + ROW_H * 0.5f};
+            const bool expanded = s_openLayers.count(layer.id.v) != 0;
+            Icons::paintCentered(rowDl, center, 10.0f, expanded ? Icons::Icon::ChevronDown : Icons::Icon::ChevronRight, C_DIM);
+            if (ImGui::IsMouseClicked(0) && ImGui::IsMouseHoveringRect({rp.x + 4.0f, rp.y}, {rp.x + 18.0f, rp.y + ROW_H})) {
+                if (expanded) s_openLayers.erase(layer.id.v);
+                else s_openLayers.insert(layer.id.v);
+            }
+            Icons::paintCentered(rowDl, {rp.x + 28.0f, center.y}, 11.0f,
+                                 Icons::Icon::Eye,
+                                 layer.switches.video ? C_TEXT : C_FAINT);
+            Icons::paintCentered(rowDl, {rp.x + 43.0f, center.y}, 11.0f,
+                                 layer.switches.locked ? Icons::Icon::Lock : Icons::Icon::LockOpen,
+                                 layer.switches.locked ? C_TEXT : C_FAINT);
+            rowDl->AddRectFilled({rp.x + 52.0f, rp.y + 4.0f}, {rp.x + 62.0f, rp.y + ROW_H - 4.0f},
+                                 labelColor(static_cast<int>(layer.label)), 1.0f);
+            char num[8];
+            snprintf(num, sizeof num, "%d", (int)row.layer + 1);
+            rowDl->AddText({rp.x + 66.0f, rp.y + 2.0f}, C_DIM, num);
+            Icons::Icon typeIcon = Icons::Icon::Solid;
+            switch (layer.kind) {
+            case Project::LayerKind::Text: typeIcon = Icons::Icon::TextLayer; break;
+            case Project::LayerKind::Shape: typeIcon = Icons::Icon::ShapeLayer; break;
+            case Project::LayerKind::Null: typeIcon = Icons::Icon::Null; break;
+            case Project::LayerKind::Camera: typeIcon = Icons::Icon::Camera; break;
+            case Project::LayerKind::Light: typeIcon = Icons::Icon::Light; break;
+            case Project::LayerKind::Footage: typeIcon = Icons::Icon::Footage; break;
             case Project::LayerKind::Composition: typeIcon = Icons::Icon::Comp; break;
-            case Project::LayerKind::Image:       typeIcon = Icons::Icon::Image; break;
+            case Project::LayerKind::Image: typeIcon = Icons::Icon::Image; break;
             default: break;
+            }
+            Icons::paintCentered(rowDl, {rp.x + 86.0f, center.y}, 11.0f, typeIcon, C_DIM);
+            rowDl->AddText({rp.x + 96.0f, rp.y + 2.0f}, isSelected ? C_TEXT : C_DIM, layer.name.c_str());
+            ImGui::PopID();
+        } else {
+            ImGui::PushID((int)(row.group ? row.group->uid : row.property->uid));
+            const float indent = 14.0f * (float)row.depth;
+            if (row.kind == Row::Kind::Group) {
+                const bool open = row.group->name == "Transform" || s_openGroups.count(row.group->uid) != 0;
+                Icons::paintCentered(rowDl, {rp.x + indent + 10.0f, rp.y + ROW_H * 0.5f}, 9.0f,
+                                     open ? Icons::Icon::ChevronDown : Icons::Icon::ChevronRight, C_DIM);
+                rowDl->AddText({rp.x + indent + 18.0f, rp.y + 2.0f}, C_DIM, row.group->name.c_str());
+                ImGui::SetCursorScreenPos({rp.x + indent, rp.y});
+                ImGui::InvisibleButton("##group", {leftSideW - indent - 2.0f, ROW_H});
+                if (ImGui::IsItemClicked()) {
+                    if (row.group->name != "Transform") {
+                        if (open) s_openGroups.erase(row.group->uid);
+                        else s_openGroups.insert(row.group->uid);
+                    }
+                }
+            } else {
+                rowDl->AddText({rp.x + indent + 18.0f, rp.y + 2.0f}, C_DIM, row.property->name.c_str());
+                const auto& v = row.property->value;
+                char value[96] = {};
+                if (v.kind == KeyframeModel::ValueKind::Scalar)
+                    snprintf(value, sizeof value, "%.3g", v.scalar);
+                else if (v.kind == KeyframeModel::ValueKind::Vec2)
+                    snprintf(value, sizeof value, "%.3g, %.3g", v.v2[0], v.v2[1]);
+                if (value[0]) {
+                    const ImVec2 size = ImGui::CalcTextSize(value);
+                    rowDl->AddText({rp.x + leftSideW - size.x - 8.0f, rp.y + 2.0f}, C_BLUE, value);
+                }
+            }
+            ImGui::PopID();
         }
-        Icons::paintCentered(dl, {rp.x + 104.0f, rp.y + ROW_H * 0.5f}, 12.0f, typeIcon, C_DIM);
-
-        // Layer name
-        ImGui::SetCursorScreenPos({rp.x + 116.0f, rp.y});
-        ImGui::Selectable(layer.name.c_str(), false, 0, {leftSideW - 240.0f, ROW_H});
-
-        // Layer switches on row
-        float swX = rp.x + swBaseX;
-        Icons::paintCentered(dl, {swX, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Shy, layer.switches.shy ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 13.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Collapse, layer.switches.collapse ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 26.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Quality, layer.switches.quality == Project::Quality::Best ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 39.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Fx, layer.switches.effects ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 52.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::FrameBlend, layer.switches.frameBlend ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 65.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::MotionBlur, layer.switches.motionBlur ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 78.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Adjustment, layer.switches.adjustment ? C_BLUE : C_FAINT);
-        Icons::paintCentered(dl, {swX + 91.0f, rp.y + ROW_H * 0.5f}, 10.0f, Icons::Icon::Cube, layer.switches.threeD ? C_BLUE : C_FAINT);
-
-        // Parent & Link: PickWhip + "None"
-        Icons::paintCentered(dl, {swX + 112.0f, rp.y + ROW_H * 0.5f}, 11.0f, Icons::Icon::PickWhip, C_DIM);
-        dl->AddText({swX + 124.0f, rp.y + 2.0f}, C_DIM, L("None"));
-
+        rowDl->AddLine({rp.x, rp.y + ROW_H - 1.0f}, {rp.x + leftSideW, rp.y + ROW_H - 1.0f}, C_LINE);
         ImGui::SetCursorScreenPos({rp.x, rp.y + ROW_H});
-        ImGui::PopID();
     }
+    s_timelineScroll = ImGui::GetScrollY();
     ImGui::EndChild();
 
-    // 1-px vertical divider between layer list and tracks
     vLine(dl, p0.x + leftSideW, p0.y + hdrH + colHdrH, p0.y + hdrH + colHdrH + layerAreaH);
 
-    // Right child (tracks / ruler / bars / playhead)
-    // after EffectCraft crates/ui-egui/src/panels/timeline.rs layer bars / work area
-    const ImVec2 barAreaP = {p0.x + leftSideW + 1.0f, p0.y + hdrH + colHdrH};
-    const float barAreaW = rightSideW - 1.0f;
+    const ImVec2 barAreaP = {barAreaX, rowTop};
     ImGui::SetCursorScreenPos(barAreaP);
-    ImGui::BeginChild("##tlbars", {barAreaW, layerAreaH}, false, ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetNextWindowScroll({0.0f, s_timelineScroll});
+    ImGui::BeginChild("##tlbars", {barAreaW, layerAreaH}, false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImDrawList* trDl = ImGui::GetWindowDrawList();
 
-    // Time ruler background
     const ImVec2 rp2 = ImGui::GetCursorScreenPos();
     trDl->AddRectFilled(rp2, {rp2.x + barAreaW, rp2.y + rulerH}, C_APP_BG);
     hLine(trDl, rp2.x, rp2.x + barAreaW, rp2.y + rulerH);
 
-    // Ruler tick marks and second numbers
-    const double durSec = comp.durationSeconds();
-    const int nSecs = (int)durSec + 1;
-    for (int s = 0; s < nSecs && s <= 30; ++s) {
-        const float rx = (durSec > 0) ? rp2.x + (float)((double)s / durSec) * (barAreaW - 20.0f) : rp2.x;
-        char tbuf[16]; snprintf(tbuf, sizeof tbuf, "%02ds", s);
-        trDl->AddLine({rx, rp2.y + rulerH - 6.0f}, {rx, rp2.y + rulerH - 1.0f}, C_LINE);
-        trDl->AddText({rx + 2.0f, rp2.y + 2.0f}, C_DIM, tbuf);
-        // Half-second sub-tick
-        if (s < nSecs && durSec > 0) {
-            const float hrx = rp2.x + (float)(((double)s + 0.5) / durSec) * (barAreaW - 20.0f);
-            trDl->AddLine({hrx, rp2.y + rulerH - 3.0f}, {hrx, rp2.y + rulerH - 1.0f}, C_LINE);
+    const double candidates[] = {0.1, 0.2, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0};
+    double tickStep = candidates[0];
+    for (double step : candidates) {
+        if (step * pps >= 58.0) { tickStep = step; break; }
+        tickStep = step;
+    }
+    const double firstTick = std::floor(s_timelineStart / tickStep) * tickStep;
+    for (double t = firstTick; t <= s_timelineStart + visible + tickStep; t += tickStep) {
+        const float x = rp2.x + (float)((t - s_timelineStart) * pps);
+        trDl->AddLine({x, rp2.y + rulerH - 7.0f}, {x, rp2.y + rulerH}, C_LINE);
+        const double frameSeconds = fr.frame_duration().seconds();
+        int64_t labelFrame = fr.frame_at(Project::Tick::from_seconds_f64(t));
+        if (frameSeconds > 0.0 && std::isfinite(frameSeconds)) {
+            const double frame = t / frameSeconds;
+            if (std::isfinite(frame) && frame < (double)INT64_MAX - 2048.0 &&
+                frame > (double)INT64_MIN + 2048.0)
+                labelFrame = (int64_t)std::llround(frame);
+            else if (frame >= 0.0)
+                labelFrame = INT64_MAX;
+            else
+                labelFrame = INT64_MIN;
+        }
+        const std::string label = Project::format_timecode_ae(labelFrame, fr, false);
+        trDl->AddText({x + 2.0f, rp2.y + 2.0f}, C_DIM, label.c_str());
+        for (int sub = 1; sub < 5; ++sub) {
+            const float sx = x + (float)(tickStep * pps * sub / 5.0);
+            trDl->AddLine({sx, rp2.y + rulerH - 3.0f}, {sx, rp2.y + rulerH}, C_LINE);
         }
     }
+    const double workStart = comp.workAreaStart.seconds();
+    const double workDuration = comp.workAreaDur.v > 0 ? comp.workAreaDur.seconds() : duration;
+    const float workX0 = rp2.x + (float)((workStart - s_timelineStart) * pps);
+    const float workX1 = rp2.x + (float)((workStart + workDuration - s_timelineStart) * pps);
+    trDl->AddRectFilled({workX0, rp2.y}, {workX1, rp2.y + 3.0f}, C_BLUE);
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rulerH);
 
-    // Work area bar across top of ruler
-    trDl->AddRectFilled({rp2.x, rp2.y}, {rp2.x + barAreaW * 0.85f, rp2.y + 3.0f}, C_BLUE);
-
-    ImGui::Dummy({barAreaW, rulerH});
-
-    // Layer bars in their exact label colors
-    for (int i = 0; i < (int)comp.layers.size(); ++i) {
-        const auto& layer = comp.layers[(size_t)i];
-        const ImU32 barCol = labelColor((i + 1) % 17);
+    struct BarDrag {
+        uint64_t layer = 0;
+        int mode = 0; // 1 = move, 2 = trim in, 3 = trim out
+        float startX = 0.0f;
+        Project::Tick in = Project::Tick::ZERO;
+        Project::Tick out = Project::Tick::ZERO;
+        Project::Tick startTime = Project::Tick::ZERO;
+    };
+    static BarDrag drag;
+    for (size_t ri = 0; ri < rows.size(); ++ri) {
+        const Row& row = rows[ri];
+        const Project::Layer& layer = comp.layers[row.layer];
         const ImVec2 brp = ImGui::GetCursorScreenPos();
-        const float inX  = (durSec > 0) ? brp.x + (float)(layer.inPt.seconds()  / durSec) * (barAreaW - 20.0f) : brp.x;
-        const float outX = (durSec > 0) ? brp.x + (float)(layer.outPt.seconds() / durSec) * (barAreaW - 20.0f) : brp.x + 100.0f;
-        const float bw = std::max(outX - inX, 10.0f);
-
-        trDl->AddRectFilled({inX, brp.y + 2.0f}, {inX + bw, brp.y + ROW_H - 2.0f}, barCol, 2.0f);
-        // In/Out brackets
-        trDl->AddLine({inX, brp.y + 2.0f}, {inX, brp.y + ROW_H - 2.0f}, IM_COL32(255, 255, 255, 180), 1.5f);
-        trDl->AddLine({inX + bw, brp.y + 2.0f}, {inX + bw, brp.y + ROW_H - 2.0f}, IM_COL32(255, 255, 255, 180), 1.5f);
-        // Layer label text inside bar
-        trDl->AddText({inX + 6.0f, brp.y + 2.0f}, IM_COL32(255, 255, 255, 230), layer.name.c_str());
-
-        ImGui::Dummy({barAreaW, ROW_H});
+        if (row.kind == Row::Kind::Layer) {
+            const float inX = rp2.x + (float)((layer.inPt.seconds() - s_timelineStart) * pps);
+            const float outX = rp2.x + (float)((layer.outPt.seconds() - s_timelineStart) * pps);
+            const float barWidth = std::max(0.0f, outX - inX);
+            const float k = s_selectedLayer == layer.id.v ? 0.62f : 0.45f;
+            const ImVec4 label = col4(labelColor(static_cast<int>(layer.label)));
+            const ImU32 fill = ImGui::ColorConvertFloat4ToU32({
+                label.x * k + 0x3a / 255.0f * (1.0f - k),
+                label.y * k + 0x3a / 255.0f * (1.0f - k),
+                label.z * k + 0x3a / 255.0f * (1.0f - k), 1.0f});
+            if (barWidth > 0.0f) {
+                trDl->AddRectFilled({inX, brp.y + 2.0f}, {outX, brp.y + ROW_H - 2.0f}, fill, 2.0f);
+                trDl->AddLine({inX, brp.y + 2.0f}, {inX, brp.y + ROW_H - 2.0f}, IM_COL32(220, 220, 220, 220), 1.0f);
+                trDl->AddLine({outX, brp.y + 2.0f}, {outX, brp.y + ROW_H - 2.0f}, IM_COL32(220, 220, 220, 220), 1.0f);
+                if (barWidth > 30.0f)
+                    trDl->AddText({inX + 5.0f, brp.y + 2.0f}, IM_COL32(230, 230, 230, 255), layer.name.c_str());
+            }
+            ImGui::SetCursorScreenPos({rp2.x, brp.y});
+            ImGui::InvisibleButton("##bar-hit", {barAreaW, ROW_H});
+            const ImVec2 mouse = ImGui::GetIO().MousePos;
+            const bool nearIn = mouse.x >= inX - 4.0f && mouse.x <= inX + std::min(5.0f, barWidth / 3.0f);
+            const bool nearOut = mouse.x >= outX - std::min(5.0f, barWidth / 3.0f) && mouse.x <= outX + 4.0f;
+            if (ImGui::IsItemHovered() && (nearIn || nearOut))
+                resizeCursor = true;
+            if (ImGui::IsItemClicked() && mouse.x >= inX - 4.0f && mouse.x <= outX + 4.0f) {
+                s_selectedLayer = layer.id.v;
+                drag.layer = layer.id.v;
+                drag.mode = nearOut ? 3 : (nearIn ? 2 : 1);
+                drag.startX = mouse.x;
+                drag.in = layer.inPt;
+                drag.out = layer.outPt;
+                drag.startTime = layer.startTime;
+            }
+            if (drag.layer == layer.id.v && ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
+                const Project::Tick offset = fr.snap_nearest(Project::Tick::from_seconds_f64((mouse.x - drag.startX) / pps));
+                Project::Tick appliedOffset = offset;
+                if (drag.mode == 1) {
+                    if (ImGui::GetIO().KeyShift) {
+                        double targets[2 * 64];
+                        size_t count = 0;
+                        for (const auto& other : comp.layers) {
+                            if (other.id == layer.id || count + 2 > 128) continue;
+                            targets[count++] = other.inPt.seconds();
+                            targets[count++] = other.outPt.seconds();
+                        }
+                        const double shiftedIn = (drag.in + appliedOffset).seconds();
+                        const double shiftedOut = (drag.out + appliedOffset).seconds();
+                        const double a = Timeline::snapTime(targets, count, shiftedIn, 8.0 / pps) - shiftedIn;
+                        const double b = Timeline::snapTime(targets, count, shiftedOut, 8.0 / pps) - shiftedOut;
+                        if (std::abs(a) <= std::abs(b) && a != 0.0) appliedOffset += Project::Tick::from_seconds_f64(a);
+                        else if (b != 0.0) appliedOffset += Project::Tick::from_seconds_f64(b);
+                    }
+                }
+                const Timeline::BarEdit edit = drag.mode == 2 ? Timeline::BarEdit::TrimIn
+                    : drag.mode == 3 ? Timeline::BarEdit::TrimOut : Timeline::BarEdit::Move;
+                const Timeline::LayerTiming editedTime = Timeline::editLayerTiming(
+                    {drag.in, drag.out, drag.startTime}, edit, appliedOffset, fr.frame_duration(), comp.duration);
+                Project::Layer& edited = comp.layers[row.layer];
+                if (edited.inPt != editedTime.in || edited.outPt != editedTime.out || edited.startTime != editedTime.start) {
+                    edited.inPt = editedTime.in;
+                    edited.outPt = editedTime.out;
+                    edited.startTime = editedTime.start;
+                    proj->dirty = true;
+                    invalidateFrameCache();
+                }
+            }
+        } else if (row.kind == Row::Kind::Group) {
+            trDl->AddRectFilled({rp2.x, brp.y}, {rp2.x + barAreaW, brp.y + ROW_H}, IM_COL32(36, 36, 36, 255));
+            trDl->AddText({rp2.x + 8.0f, brp.y + 2.0f}, C_DIM, row.group->name.c_str());
+        } else {
+            trDl->AddLine({rp2.x, brp.y + ROW_H - 1.0f}, {rp2.x + barAreaW, brp.y + ROW_H - 1.0f}, C_LINE);
+        }
+        if (drag.layer == layer.id.v && !ImGui::IsMouseDown(0))
+            drag = {};
+        ImGui::SetCursorScreenPos({rp2.x, brp.y + ROW_H});
     }
 
-    // Playhead at current time (t=0)
-    {
-        const float phX = barAreaP.x;
-        // Needle line
-        trDl->AddLine({phX, barAreaP.y}, {phX, barAreaP.y + layerAreaH}, C_BLUE, 1.5f);
-        // Playhead head icon on ruler
-        const ImVec2 headPts[] = {
-            {phX - 5.0f, barAreaP.y},
-            {phX + 5.0f, barAreaP.y},
-            {phX + 5.0f, barAreaP.y + 10.0f},
-            {phX,        barAreaP.y + 15.0f},
-            {phX - 5.0f, barAreaP.y + 10.0f}
-        };
-        trDl->AddConvexPolyFilled(headPts, 5, C_BLUE);
+    const float playheadX = rp2.x + (float)((s_currentTime.seconds() - s_timelineStart) * pps);
+    trDl->AddLine({playheadX, rp2.y}, {playheadX, rp2.y + layerAreaH}, C_BLUE, 1.5f);
+    const ImVec2 headPts[] = {
+        {playheadX - 5.0f, rp2.y}, {playheadX + 5.0f, rp2.y},
+        {playheadX + 5.0f, rp2.y + 10.0f}, {playheadX, rp2.y + 15.0f},
+        {playheadX - 5.0f, rp2.y + 10.0f}
+    };
+    trDl->AddConvexPolyFilled(headPts, 5, C_BLUE);
+
+    ImGui::SetCursorScreenPos({rp2.x, rp2.y + 2.0f});
+    ImGui::InvisibleButton("##ruler-scrub", {barAreaW, rulerH - 2.0f});
+    if (ImGui::IsItemActive() && ImGui::IsMouseDown(0)) {
+        const float x = std::clamp(ImGui::GetIO().MousePos.x, rp2.x, rp2.x + barAreaW);
+        setCurrentTime(Timeline::timeAtPixel(x, rp2.x, s_timelineStart, pps, fr, comp.duration));
+        s_playing = false;
     }
+    if (resizeCursor)
+        ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+    ImGui::GetWindowDrawList()->AddLine({rp2.x, rp2.y + rulerH}, {rp2.x + barAreaW, rp2.y + rulerH}, C_LINE);
+    s_timelineScroll = ImGui::GetScrollY();
     ImGui::EndChild();
 
-    // --- Toggle Switches / Modes & zoom slider at bottom ---
     const ImVec2 bp0 = {p0.x, p0.y + hdrH + colHdrH + layerAreaH};
     hLine(dl, bp0.x, bp0.x + avW, bp0.y);
     dl->AddRectFilled(bp0, {bp0.x + avW, bp0.y + botBarH}, C_APP_BG);
@@ -751,31 +967,40 @@ static void drawTimeline(Project::Project* proj) {
     ImGui::SetCursorScreenPos({bp0.x + 8.0f, bp0.y + 2.0f});
     if (ImGui::SmallButton(L("Toggle Switches / Modes"))) {}
 
-    // Zoom slider on the right
-    ImGui::SameLine(avW - 160.0f);
-    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bp0.y + botBarH * 0.5f}, 12.0f, Icons::Icon::MountainSmall, C_DIM);
-    ImGui::Dummy({12, botBarH - 4.0f});
-    ImGui::SameLine(0, 4);
-    static float s_tlZoom = 50.0f;
+    ImGui::SetCursorScreenPos({bp0.x + avW - 150.0f, bp0.y + 2.0f});
+    Icons::paintCentered(dl, {bp0.x + avW - 140.0f, bp0.y + botBarH * 0.5f}, 12.0f, Icons::Icon::MountainSmall, C_DIM);
+    ImGui::SetCursorScreenPos({bp0.x + avW - 130.0f, bp0.y + 2.0f});
     ImGui::SetNextItemWidth(100.0f);
-    ImGui::SliderFloat("##tlzoom", &s_tlZoom, 0.0f, 100.0f, "");
-    ImGui::SameLine(0, 4);
-    Icons::paintCentered(dl, {ImGui::GetCursorScreenPos().x + 6.0f, bp0.y + botBarH * 0.5f}, 14.0f, Icons::Icon::MountainLarge, C_DIM);
+    if (ImGui::SliderFloat("##tlzoom", &s_timelineZoom, 0.0f, 100.0f, "")) {
+        const double factor = std::pow(50.0, s_timelineZoom / 100.0f);
+        Timeline::setZoom(s_timelineStart, s_timelinePps, fitPps * factor, fitPps,
+                          duration, s_currentTime.seconds(), barAreaW * 0.5);
+    }
+    Icons::paintCentered(dl, {bp0.x + avW - 14.0f, bp0.y + botBarH * 0.5f}, 14.0f, Icons::Icon::MountainLarge, C_DIM);
 }
 
 // after EffectCraft crates/ui-egui/src/panels/live_preview.rs
-static void drawPreviewPanel() {
+static void drawPreviewPanel(Project::Project* proj) {
     ImDrawList* dl = ImGui::GetWindowDrawList();
     const float avW = ImGui::GetContentRegionAvail().x;
     const ImVec2 p0 = ImGui::GetCursorScreenPos();
+    const Project::Composition* comp = nullptr;
+    if (proj && proj->activeComp >= 0 && (size_t)proj->activeComp < proj->compositions.size())
+        comp = &proj->compositions[(size_t)proj->activeComp];
 
     // Transport buttons row with vector icons
     // after EffectCraft crates/ui-egui/src/panels/live_preview.rs transport buttons
     ImGui::SetCursorScreenPos({p0.x + 8.0f, p0.y + 4.0f});
-    if (Icons::iconButton("##p_first", Icons::Icon::First, false, {22, 22})) {}
+    if (Icons::iconButton("##p_first", Icons::Icon::First, false, {22, 22}) && comp) {
+        setCurrentTime(Project::Tick::ZERO);
+        s_playing = false;
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("First Frame"));
     ImGui::SameLine(0, 2);
-    if (Icons::iconButton("##p_stepback", Icons::Icon::StepBack, false, {22, 22})) {}
+    if (Icons::iconButton("##p_stepback", Icons::Icon::StepBack, false, {22, 22}) && comp) {
+        setCurrentTime(comp->frameRate.tick_of(comp->frameRate.frame_at(s_currentTime) - 1).max_t(Project::Tick::ZERO));
+        s_playing = false;
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Previous Frame"));
     ImGui::SameLine(0, 2);
     static bool s_playing = false;
@@ -784,10 +1009,17 @@ static void drawPreviewPanel() {
     }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", s_playing ? L("Stop") : L("Play"));
     ImGui::SameLine(0, 2);
-    if (Icons::iconButton("##p_stepfwd", Icons::Icon::StepFwd, false, {22, 22})) {}
+    if (Icons::iconButton("##p_stepfwd", Icons::Icon::StepFwd, false, {22, 22}) && comp) {
+        const Project::Tick next = comp->frameRate.tick_of(comp->frameRate.frame_at(s_currentTime) + 1);
+        setCurrentTime(next.min_t(comp->duration));
+        s_playing = false;
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Next Frame"));
     ImGui::SameLine(0, 2);
-    if (Icons::iconButton("##p_last", Icons::Icon::Last, false, {22, 22})) {}
+    if (Icons::iconButton("##p_last", Icons::Icon::Last, false, {22, 22}) && comp) {
+        setCurrentTime(comp->frameRate.tick_of(std::max<int64_t>(0, comp->frameRate.frame_at(comp->duration - Project::Tick(1)))));
+        s_playing = false;
+    }
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Last Frame"));
     ImGui::SameLine(0, 4);
     static bool s_loop = true;
@@ -822,7 +1054,11 @@ static void drawPreviewPanel() {
     dl->AddRectFilled(cbP, {cbP.x + avW, cbP.y + 6.0f}, C_WELL, 2.0f);
     dl->AddRectFilled(cbP, {cbP.x + avW * 0.12f, cbP.y + 6.0f}, C_BLUE, 2.0f);
     ImGui::Dummy({avW, 8.0f});
-    ImGui::TextDisabled("36 / 300 %s", L("frames cached"));
+    const int64_t totalFrames = comp ? std::max<int64_t>(1, comp->frameRate.frame_at(comp->duration)) : 0;
+    char cachedText[96];
+    snprintf(cachedText, sizeof cachedText, "%u / %lld %s",
+             (unsigned)s_frameCache.size(), (long long)totalFrames, L("frames cached"));
+    ImGui::TextDisabled("%s", cachedText);
 }
 
 // after EffectCraft crates/ui-egui/src/panels/properties.rs
@@ -885,6 +1121,41 @@ static void drawInfoPanel(Project::Project* proj) {
 // after EffectCraft crates/ui-egui/src/panels/render_queue.rs
 static void drawRenderQueue() {
     ImGui::TextDisabled(L("Render Queue is empty."));
+}
+
+// Advance playback by one UI frame, quantized to the composition's frame boundaries.
+static void advancePlayback(Project::Project* proj) {
+    if (!s_playing) return;
+    if (!proj || proj->activeComp < 0 || (size_t)proj->activeComp >= proj->compositions.size()) {
+        s_playing = false;
+        return;
+    }
+    const auto& comp = proj->compositions[(size_t)proj->activeComp];
+    const double dt = std::clamp((double)ImGui::GetIO().DeltaTime, 0.0, 0.1);
+    double start = std::max(0.0, comp.workAreaStart.seconds());
+    double end = comp.workAreaDur.v > 0
+        ? std::min(comp.duration.seconds(), start + comp.workAreaDur.seconds())
+        : comp.duration.seconds();
+    if (end <= start) {
+        start = 0.0;
+        end = comp.duration.seconds();
+    }
+    const double span = end - start;
+    if (span <= 0.0) {
+        s_playing = false;
+        setCurrentTime(Project::Tick::ZERO);
+        return;
+    }
+    double next = s_currentTime.seconds() + dt;
+    if (next >= end) {
+        if (s_loop) {
+            next = start + std::fmod(std::max(0.0, next - start), span);
+        } else {
+            next = std::max(start, end - comp.frameDuration().seconds());
+            s_playing = false;
+        }
+    }
+    setCurrentTime(comp.frameRate.snap_nearest(Project::Tick::from_seconds_f64(next)));
 }
 
 // ---------- header / tool bar ----------
@@ -1057,6 +1328,9 @@ static void drawHeader(float x, float y, float w, float h) {
 // ---------- main draw ----------
 void draw(Project::Project* proj, const Actions& actions) {
     g_actions = &actions;
+    advancePlayback(proj);
+    if (!ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Space))
+        s_playing = !s_playing;
 
     // Keyboard shortcuts: Ctrl+N/O/S/Q, Ctrl+Shift+S
     const ImGuiIO& io = ImGui::GetIO();
@@ -1289,7 +1563,7 @@ void draw(Project::Project* proj, const Actions& actions) {
 
         ImGui::SetCursorScreenPos({rp.x, rp.y+TAB_H});
         ImGui::BeginChild("##righttop", {RIGHT_W, rightTopH-TAB_H}, false);
-        if (s_previewTab == 0)      drawPreviewPanel();
+        if (s_previewTab == 0)              drawPreviewPanel(proj);
         else if (s_previewTab == 1) drawInfoPanel(proj);
         else                        ImGui::TextDisabled(L("Audio meters in phase 9."));
         ImGui::EndChild();

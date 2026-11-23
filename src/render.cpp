@@ -10,8 +10,47 @@
 #include <cmath>
 #include <algorithm>
 #include <limits>
+#include <iterator>
 
 namespace Render {
+
+FrameCache::FrameCache(size_t budgetBytes)
+    : budgetBytes_(budgetBytes) {}
+
+const Raster::Image* FrameCache::find(uint64_t compId, int64_t frame, double scale) {
+    for (auto it = frames_.begin(); it != frames_.end(); ++it) {
+        if (it->compId == compId && it->frame == frame && it->scale == scale) {
+            frames_.splice(frames_.begin(), frames_, it);
+            return &frames_.front().image;
+        }
+    }
+    return nullptr;
+}
+
+void FrameCache::insert(uint64_t compId, int64_t frame, double scale, Raster::Image image) {
+    for (auto it = frames_.begin(); it != frames_.end();) {
+        if (it->compId == compId && it->frame == frame && it->scale == scale) {
+            usedBytes_ -= it->image.data.size() * sizeof(Raster::Px);
+            it = frames_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    const size_t bytes = image.data.size() * sizeof(Raster::Px);
+    if (bytes == 0 || bytes > budgetBytes_)
+        return;
+    frames_.push_front({compId, frame, scale, std::move(image)});
+    usedBytes_ += bytes;
+    while (usedBytes_ > budgetBytes_ || frames_.size() > 120) {
+        usedBytes_ -= frames_.back().image.data.size() * sizeof(Raster::Px);
+        frames_.pop_back();
+    }
+}
+
+void FrameCache::clear() {
+    frames_.clear();
+    usedBytes_ = 0;
+}
 
 // =====================================================================
 // Transform & Opacity Evaluation

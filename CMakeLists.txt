@@ -61,6 +61,7 @@ set(SOURCES
     src/props.cpp
     src/raster.cpp
     src/render.cpp
+    src/timeline.cpp
     src/icons.cpp
     src/selftest.cpp)
 if(WIN32)
