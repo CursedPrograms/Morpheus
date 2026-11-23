@@ -39,7 +39,8 @@ None.
   - Property stopwatches enable/disable animation at the current layer time; key navigation and the diamond add/remove the current key. Values are editable in the Timeline rows, and key markers can be selected, frame-dragged, interpolated (Linear, Hold, Bezier, Easy Ease), or deleted.
   - Graph Editor plots numeric animated property components, with frame-quantized time and value dragging. `--script keyframes` and `--script graph_editor` provide screenshot hooks.
   - Ported `Layer::layer_time`, `Layer::comp_time`, and `limits::stretch` semantics (percent stretch, including reverse and invalid values), and routed renderer transforms, opacity, masks, parents, mattes, and nested compositions through layer-local time. Added tests for stretch-aware conversion, key toggling, and rendered keyframes; the Release build and all 99/99 self-tests pass. Both captures were visually checked.
-  - Remaining keyframe/graph features include multi-key selection/editing and layer-lock behavior, Bezier influence handles, speed graph, graph fit/zoom and dimension controls, and graph toolbar interpolation tools.
+  - Graph Editor parity follow-up: Value and Speed Graph modes, sampled per-component velocity and spatial speed, selected-key Bezier handle editing (influence and speed), Shift-dominant-axis dragging, Fit Graph, and locked-layer edit prevention. Added `--script speed_graph` and ported `shift_locks_drag_to_dominant_axis` plus handle speed/influence math tests; the Release build and all 102/102 self-tests pass, with Value and Speed Graph captures visually checked.
+  - Remaining Timeline/keyframe parity includes multi-key selection/editing and marquee, marker editing, group reorder, property reveal/search shortcuts, effect/source rows, full column/switch menus, and graph toolbar interpolation tools and dimension controls.
 
 ## Kiro asks
 

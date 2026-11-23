@@ -10,6 +10,7 @@
 #include <string>
 #include <functional>
 #include <cstdint>
+#include <cstddef>
 
 // Forward declaration for the project model.
 namespace Project { struct ProjectData; }
@@ -39,6 +40,8 @@ void invalidateFrameCache();
 void prepareTimelineCapture(uint64_t layerId);
 
 // Select and expand a layer for scripted keyframe or graph-editor captures.
-void prepareKeyframeCapture(uint64_t layerId, bool graphEditor);
+void prepareKeyframeCapture(uint64_t layerId, bool graphEditor, bool speedGraph = false,
+                            uint64_t propertyId = 0, int64_t keyTimeTicks = 0,
+                            size_t dimension = 0);
 
 }  // namespace Panels

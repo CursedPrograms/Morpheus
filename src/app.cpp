@@ -211,12 +211,14 @@ void script(const std::string& name) {
             Panels::prepareTimelineCapture(comp.layers[1].id.v);
             SDL_Log("script timeline: rendered 3 timeline layers with editable timing.");
         }
-    } else if (name == "keyframes" || name == "graph_editor") {
+    } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {
             auto& comp = s_proj->compositions[0];
             if (comp.layers.size() > 1) {
                 auto& layer = comp.layers[1];
+                uint64_t graphProperty = 0;
+                int64_t graphKeyTime = 0;
                 if (auto* position = layer.props.prop_mut("transform/position")) {
                     position->set_animated(true, Project::Tick::ZERO);
                     position->set_value_at(Project::Tick::from_seconds_f64(2.0),
@@ -228,9 +230,12 @@ void script(const std::string& name) {
                     opacity->set_animated(true, Project::Tick::ZERO);
                     opacity->set_value_at(Project::Tick::from_seconds_f64(4.0),
                         KeyframeModel::Value::Scalar(35.0));
+                    graphProperty = opacity->uid;
+                    graphKeyTime = Project::Tick::from_seconds_f64(4.0).v;
                 }
                 s_proj->dirty = true;
-                Panels::prepareKeyframeCapture(layer.id.v, name == "graph_editor");
+                Panels::prepareKeyframeCapture(layer.id.v, name != "keyframes",
+                    name == "speed_graph", graphProperty, graphKeyTime);
                 SDL_Log("script %s: added animated Position and Opacity properties.",
                         name.c_str());
             }

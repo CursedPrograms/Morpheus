@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace Timeline {
@@ -30,6 +31,14 @@ double snapTime(const double* candidates, size_t count, double time, double tole
 // Convert a horizontal position to the nearest frame in the composition.
 Project::Tick timeAtPixel(double x, double x0, double start, double pps,
                           Project::FrameRate frameRate, Project::Tick duration);
+
+// Restrict a Shift-drag to its dominant axis; without Shift both axes remain available.
+std::pair<bool, bool> shiftAxes(bool shift, float dx, float dy);
+
+// Convert a dragged Bezier handle endpoint into temporal speed and influence.
+KeyframeModel::Ease easeAtHandle(KeyframeModel::Ease current, double keyTime, double keyValue,
+                                 double desiredTime, double desiredValue, double duration,
+                                 bool out, bool speedGraph);
 
 enum class BarEdit { Move, TrimIn, TrimOut };
 

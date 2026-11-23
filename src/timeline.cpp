@@ -85,6 +85,24 @@ Project::Tick timeAtPixel(double x, double x0, double start, double pps,
     return frameRate.snap_nearest(Project::Tick::from_seconds_f64(seconds));
 }
 
+std::pair<bool, bool> shiftAxes(bool shift, float dx, float dy) {
+    if (shift) return {std::abs(dx) >= std::abs(dy), std::abs(dy) > std::abs(dx)};
+    return {true, true};
+}
+
+KeyframeModel::Ease easeAtHandle(KeyframeModel::Ease current, double keyTime, double keyValue,
+                                 double desiredTime, double desiredValue, double duration,
+                                 bool out, bool speedGraph) {
+    const double direction = out ? 1.0 : -1.0;
+    const double safeDuration = std::max(duration, 1e-9);
+    const double offset = std::max((desiredTime - keyTime) * direction, safeDuration * 0.001);
+    const double influence = std::clamp(offset / safeDuration, 0.001, 1.0);
+    const double speed = speedGraph
+        ? std::copysign(std::max(0.0, desiredValue), current.speed)
+        : (desiredValue - keyValue) / offset * direction;
+    return {speed, influence};
+}
+
 LayerTiming editLayerTiming(LayerTiming original, BarEdit edit, Project::Tick offset,
                             Project::Tick frameDuration, Project::Tick compDuration) {
     const Project::Tick oneFrame = frameDuration.v > 0 ? frameDuration : Project::Tick(1);

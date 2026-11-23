@@ -1922,6 +1922,30 @@ static bool t_timeline_layer_reorder_preserves_stack_order() {
     return Timeline::reorderLayers(order, {}, 3) == order;
 }
 
+// after EffectCraft crates/ui-egui/src/panels/graph.rs test shift_locks_drag_to_dominant_axis
+static bool t_graph_shift_axes() {
+    if (Timeline::shiftAxes(false, 10.0f, 3.0f) != std::make_pair(true, true)) return false;
+    if (Timeline::shiftAxes(true, 10.0f, -3.0f) != std::make_pair(true, false)) return false;
+    if (Timeline::shiftAxes(true, 2.0f, -9.0f) != std::make_pair(false, true)) return false;
+    return Timeline::shiftAxes(true, 5.0f, 5.0f) == std::make_pair(true, false);
+}
+
+// after EffectCraft crates/ui-egui/src/panels/graph.rs HandleGrab::ease
+static bool t_graph_handle_ease() {
+    const KeyframeModel::Ease speed = Timeline::easeAtHandle(
+        {-12.0, 0.4}, 1.0, 4.0, 1.5, 9.0, 2.0, true, true);
+    if (std::abs(speed.speed + 9.0) > 1e-9 || std::abs(speed.influence - 0.25) > 1e-9)
+        return false;
+    const KeyframeModel::Ease value = Timeline::easeAtHandle(
+        {3.0, 0.2}, 1.0, 4.0, 2.0, 10.0, 2.0, true, false);
+    if (std::abs(value.speed - 6.0) > 1e-9 || std::abs(value.influence - 0.5) > 1e-9)
+        return false;
+    const KeyframeModel::Ease limited = Timeline::easeAtHandle(
+        {5.0, 0.2}, 2.0, 0.0, 1.0, 3.0, 2.0, false, false);
+    return std::abs(limited.influence - 0.5) < 1e-9 &&
+        std::abs(limited.speed + 3.0) < 1e-9;
+}
+
 static std::tuple<Proj, uint64_t, Composition> render_setup() {
     Proj p;
     p.nextId = 1;
@@ -2302,6 +2326,8 @@ void registerAll() {
     add("timeline::bar_drags_trim_and_move_frame_accurately",   t_timeline_trim_and_move_layer);
     add("timeline::key_toggle_preserves_last_value",             t_timeline_key_toggle_preserves_last_value);
     add("timeline::layer_reorder_preserves_selection_order",     t_timeline_layer_reorder_preserves_stack_order);
+    add("graph::shift_locks_drag_to_dominant_axis",               t_graph_shift_axes);
+    add("graph::handle_drag_sets_speed_and_influence",            t_graph_handle_ease);
     // Render tests (after EffectCraft crates/render/src/tests.rs)
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);

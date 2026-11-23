@@ -163,9 +163,24 @@ struct KeyDrag {
     float graphHeight = 1.0f;
     bool graph = false;
 };
+struct GraphEaseDrag {
+    uint64_t layer = 0;
+    Props::Uid property = 0;
+    Project::Tick time = Project::Tick::ZERO;
+    size_t dimension = 0;
+    bool out = false;
+    ImVec2 press{};
+    double handleTime = 0.0;
+    double handleValue = 0.0;
+    double keyValue = 0.0;
+    double duration = 0.0;
+    KeyframeModel::Ease ease;
+};
 
 static SelectedKey s_selectedKey;
 static KeyDrag s_keyDrag;
+static GraphEaseDrag s_graphEaseDrag;
+static bool s_graphSpeed = false;
 struct LayerRowHit { ImVec2 min; ImVec2 max; uint64_t id; size_t index; };
 static std::vector<LayerRowHit> s_layerRowHits;
 static bool s_layerReorderActive = false;
@@ -194,6 +209,8 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_graphEditor = false;
     s_selectedKey = {};
     s_keyDrag = {};
+    s_graphEaseDrag = {};
+    s_graphSpeed = false;
     s_layerRowHits.clear();
     s_layerReorderActive = false;
     s_layerReorderIds.clear();
@@ -201,9 +218,13 @@ void prepareTimelineCapture(uint64_t layerId) {
     invalidateFrameCache();
 }
 
-void prepareKeyframeCapture(uint64_t layerId, bool graphEditor) {
+void prepareKeyframeCapture(uint64_t layerId, bool graphEditor, bool speedGraph,
+                            uint64_t propertyId, int64_t keyTimeTicks, size_t dimension) {
     prepareTimelineCapture(layerId);
     s_graphEditor = graphEditor;
+    s_graphSpeed = speedGraph;
+    if (graphEditor && propertyId != 0)
+        s_selectedKey = {layerId, propertyId, Project::Tick(keyTimeTicks), dimension};
 }
 
 static void setCurrentTime(Project::Tick time) {
@@ -256,11 +277,128 @@ static void setNumericComponent(KeyframeModel::Value& value, size_t dimension, d
     }
 }
 
+// after EffectCraft crates/ui-egui/src/panels/graph.rs speed_at and curve sampling
+static double graphComponentAt(const Project::Layer& layer, const Props::Property& property,
+                               Project::Tick compTime, size_t dimension) {
+    const Project::Tick layerTime = layer.layerTime(compTime);
+    if (s_graphSpeed) {
+        if (property.spatial &&
+            (property.value.kind == KeyframeModel::ValueKind::Vec2 ||
+             property.value.kind == KeyframeModel::ValueKind::Vec3))
+            return KeyframeModel::speed(property.keys, layerTime, true);
+        const auto velocity = KeyframeModel::velocity(property.keys, layerTime, false);
+        return dimension < velocity.size() ? std::abs(velocity[dimension]) : 0.0;
+    }
+    return numericComponent(property.value_at(layerTime), dimension);
+}
+
+// Draw and edit a selected key's temporal Bezier influence/speed handle.
+static void graphEaseHandle(Project::Project* project, Project::Layer& layer,
+                            Props::Property& property, size_t keyIndex, size_t dimension,
+                            bool out, ImDrawList* drawList, ImVec2 graphMin, ImVec2 graphMax,
+                            double valueMin, double valueMax, double pixelsPerSecond) {
+    if (layer.switches.locked || keyIndex >= property.keys.size()) return;
+    if (property.spatial && !s_graphSpeed) return;
+    const bool selected = s_selectedKey.layer == layer.id.v &&
+        s_selectedKey.property == property.uid && s_selectedKey.time == property.keys[keyIndex].time &&
+        s_selectedKey.dimension == dimension;
+    if (!selected) return;
+
+    const auto ease = KeyframeModel::side_ease(property.keys, keyIndex, dimension, property.spatial, out);
+    if (!ease) return;
+    const size_t neighborIndex = out ? keyIndex + 1 : keyIndex - 1;
+    if (neighborIndex >= property.keys.size()) return;
+    const double duration = std::abs(property.keys[neighborIndex].time.seconds() -
+                                      property.keys[keyIndex].time.seconds());
+    if (!(duration > 0.0) || !std::isfinite(duration)) return;
+    const Project::Tick compTime = layer.compTime(property.keys[keyIndex].time);
+    const double keyTime = compTime.seconds();
+    const double signedOffset = ease->influence * duration * (out ? 1.0 : -1.0);
+    double keyValue = numericComponent(property.keys[keyIndex].value, dimension);
+    if (s_graphSpeed) keyValue = graphComponentAt(layer, property, compTime, dimension);
+    const double handleValue = s_graphSpeed ? std::abs(ease->speed) :
+        keyValue + ease->speed * signedOffset;
+    const double graphDuration = std::max(1e-12, valueMax - valueMin);
+    const float handleY = graphMax.y - static_cast<float>((handleValue - valueMin) / graphDuration) *
+        (graphMax.y - graphMin.y);
+    const ImVec2 keyPoint{graphMin.x + static_cast<float>((keyTime - s_timelineStart) * pixelsPerSecond),
+        graphMax.y - static_cast<float>((keyValue - valueMin) / graphDuration) * (graphMax.y - graphMin.y)};
+    const ImVec2 handlePoint{graphMin.x + static_cast<float>((keyTime + signedOffset - s_timelineStart) *
+        pixelsPerSecond), handleY};
+    const ImU32 handleColor = IM_COL32(216, 216, 96, 255);
+    drawList->AddLine(keyPoint, handlePoint, handleColor, 1.0f);
+    drawList->AddCircleFilled(handlePoint, 3.5f, handleColor);
+
+    char widgetId[128];
+    snprintf(widgetId, sizeof widgetId, "##ease_%llu_%llu_%zu_%d",
+        static_cast<unsigned long long>(layer.id.v),
+        static_cast<unsigned long long>(property.uid), keyIndex, out ? 1 : 0);
+    ImGui::SetCursorScreenPos({handlePoint.x - 6.0f, handlePoint.y - 6.0f});
+    ImGui::InvisibleButton(widgetId, {12.0f, 12.0f});
+    if (ImGui::IsItemActivated()) {
+        s_graphEaseDrag = {layer.id.v, property.uid, property.keys[keyIndex].time,
+            dimension, out, ImGui::GetIO().MouseClickedPos[ImGuiMouseButton_Left],
+            keyTime + signedOffset, handleValue, keyValue, duration, *ease};
+    }
+    const bool ownsDrag = s_graphEaseDrag.layer == layer.id.v &&
+        s_graphEaseDrag.property == property.uid &&
+        s_graphEaseDrag.time == property.keys[keyIndex].time &&
+        s_graphEaseDrag.out == out && s_graphEaseDrag.dimension == dimension;
+    if (ownsDrag && ImGui::IsMouseDown(ImGuiMouseButton_Left) && pixelsPerSecond > 0.0) {
+        const ImVec2 mouse = ImGui::GetIO().MousePos;
+        const float dx = mouse.x - s_graphEaseDrag.press.x;
+        const float dy = mouse.y - s_graphEaseDrag.press.y;
+        const auto [timeAxis, valueAxis] =
+            Timeline::shiftAxes(ImGui::GetIO().KeyShift, dx, dy);
+        const double desiredTime = s_graphEaseDrag.handleTime +
+            (timeAxis ? dx / pixelsPerSecond : 0.0);
+        const double desiredValue = s_graphEaseDrag.handleValue -
+            (valueAxis ? dy * graphDuration / (graphMax.y - graphMin.y) : 0.0);
+        const KeyframeModel::Ease newEase = Timeline::easeAtHandle(s_graphEaseDrag.ease,
+            keyTime, s_graphEaseDrag.keyValue, desiredTime, desiredValue, duration, out, s_graphSpeed);
+
+        KeyframeModel::Keyframe& key = property.keys[keyIndex];
+        std::vector<KeyframeModel::Ease>& side = out ? key.out_ease : key.in_ease;
+        const size_t dimensions = property.spatial &&
+            (key.value.kind == KeyframeModel::ValueKind::Vec2 ||
+             key.value.kind == KeyframeModel::ValueKind::Vec3)
+            ? 1 : std::max<size_t>(1, key.value.dims());
+        if (side.size() != dimensions) {
+            std::vector<KeyframeModel::Ease> initial;
+            initial.reserve(dimensions);
+            for (size_t d = 0; d < dimensions; ++d)
+                initial.push_back(KeyframeModel::side_ease(property.keys, keyIndex, d, property.spatial, out)
+                    .value_or(KeyframeModel::Ease{}));
+            side = std::move(initial);
+        }
+        const size_t easeDimension = property.spatial ? 0 : dimension;
+        if (easeDimension < side.size()) {
+            side[easeDimension] = newEase;
+            if (out) key.out_interp = KeyframeModel::Interp::Bezier;
+            else key.in_interp = KeyframeModel::Interp::Bezier;
+            key.auto_bezier = false;
+            if (key.continuous) {
+                std::vector<KeyframeModel::Ease>& other = out ? key.in_ease : key.out_ease;
+                if (other.size() != side.size()) other = side;
+                for (size_t d = 0; d < other.size(); ++d)
+                    other[d].speed = side[d].speed;
+                key.in_interp = KeyframeModel::Interp::Bezier;
+                key.out_interp = KeyframeModel::Interp::Bezier;
+            }
+            project->dirty = true;
+            invalidateFrameCache();
+        }
+    }
+    if (ownsDrag && ImGui::IsMouseReleased(ImGuiMouseButton_Left))
+        s_graphEaseDrag = {};
+}
+
 // Draw a keyframe and start a frame-quantized drag without changing its selection identity.
 static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Props::Property& property,
                            KeyframeModel::Keyframe& key, size_t keyIndex,
                            size_t dimension, ImDrawList* drawList, ImVec2 center,
-                           bool graph, double graphMin, double graphMax, float graphHeight) {
+                           bool graph, bool graphValueEdit,
+                           double graphMin, double graphMax, float graphHeight) {
     const bool selected = s_selectedKey.layer == layer.id.v &&
         s_selectedKey.property == property.uid && s_selectedKey.time == key.time &&
         (!graph || s_selectedKey.dimension == dimension);
@@ -276,19 +414,21 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
         s_selectedLayer = layer.id.v;
         s_selectedKey = {layer.id.v, property.uid, key.time, dimension};
         setCurrentTime(layer.compTime(key.time));
-        s_keyDrag = {};
-        s_keyDrag.layer = layer.id.v;
-        s_keyDrag.property = property.uid;
-        s_keyDrag.startTime = key.time;
-        s_keyDrag.currentTime = key.time;
-        s_keyDrag.value = key.value;
-        s_keyDrag.dimension = dimension;
-        s_keyDrag.startX = ImGui::GetIO().MousePos.x;
-        s_keyDrag.startY = ImGui::GetIO().MousePos.y;
-        s_keyDrag.graphMin = graphMin;
-        s_keyDrag.graphMax = graphMax;
-        s_keyDrag.graphHeight = std::max(1.0f, graphHeight);
-        s_keyDrag.graph = graph;
+        if (!layer.switches.locked) {
+            s_keyDrag = {};
+            s_keyDrag.layer = layer.id.v;
+            s_keyDrag.property = property.uid;
+            s_keyDrag.startTime = key.time;
+            s_keyDrag.currentTime = key.time;
+            s_keyDrag.value = key.value;
+            s_keyDrag.dimension = dimension;
+            s_keyDrag.startX = ImGui::GetIO().MousePos.x;
+            s_keyDrag.startY = ImGui::GetIO().MousePos.y;
+            s_keyDrag.graphMin = graphMin;
+            s_keyDrag.graphMax = graphMax;
+            s_keyDrag.graphHeight = std::max(1.0f, graphHeight);
+            s_keyDrag.graph = graphValueEdit;
+        }
     }
 
     if (dimension == 0 && ImGui::IsItemClicked(ImGuiMouseButton_Right))
@@ -296,6 +436,7 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
     bool changed = false;
     bool remove = false;
     if (dimension == 0 && ImGui::BeginPopup(id)) {
+        ImGui::BeginDisabled(layer.switches.locked);
         if (ImGui::MenuItem(L("Linear"))) {
             key.in_interp = KeyframeModel::Interp::Linear;
             key.out_interp = KeyframeModel::Interp::Linear;
@@ -315,6 +456,7 @@ static bool keyframeMarker(Project::Project* project, Project::Layer& layer, Pro
             changed = true;
         }
         if (ImGui::MenuItem(L("Delete"))) remove = true;
+        ImGui::EndDisabled();
         ImGui::EndPopup();
     }
     if (remove) {
@@ -348,6 +490,10 @@ static bool updateKeyDrag(Project::Project* project, Project::Composition& comp,
         return false;
     }
     Project::Layer& layer = *layerIt;
+    if (layer.switches.locked) {
+        s_keyDrag = {};
+        return false;
+    }
     Props::Property* property = layer.props.find_mut(s_keyDrag.property);
     if (!property) {
         s_keyDrag = {};
@@ -1236,13 +1382,19 @@ static void drawTimeline(Project::Project* proj) {
     double graphValueMax = -std::numeric_limits<double>::infinity();
     if (s_graphEditor) {
         trDl->AddRectFilled(graphMin, graphMax, C_WELL);
+        const int rangeSamples = std::clamp(static_cast<int>(barAreaW / 8.0f), 2, 120);
         for (const Row& row : rows) {
-            if (row.kind != Row::Kind::Property || !row.property) continue;
-            const size_t dimensions = numericDimensions(row.property->value);
-            for (const auto& key : row.property->keys) {
-                const size_t count = numericDimensions(key.value);
-                for (size_t d = 0; d < std::min(dimensions, count); ++d) {
-                    const double value = numericComponent(key.value, d);
+            if (row.kind != Row::Kind::Property || !row.property || row.property->keys.empty())
+                continue;
+            Project::Layer& layer = comp.layers[row.layer];
+            Props::Property& property = *row.property;
+            const size_t dimensions = numericDimensions(property.value);
+            const size_t graphDimensions = s_graphSpeed && property.spatial ? 1 : dimensions;
+            for (int i = 0; i < rangeSamples; ++i) {
+                const double time = s_timelineStart + visible * i / (rangeSamples - 1);
+                const Project::Tick compTime = Project::Tick::from_seconds_f64(time);
+                for (size_t d = 0; d < graphDimensions; ++d) {
+                    const double value = graphComponentAt(layer, property, compTime, d);
                     if (!std::isfinite(value)) continue;
                     graphValueMin = std::min(graphValueMin, value);
                     graphValueMax = std::max(graphValueMax, value);
@@ -1285,15 +1437,15 @@ static void drawTimeline(Project::Project* proj) {
                 Props::Property& property = *row.property;
                 const size_t dimensions = numericDimensions(property.value);
                 if (dimensions == 0) continue;
-                for (size_t dimension = 0; dimension < dimensions; ++dimension) {
+                const size_t graphDimensions = s_graphSpeed && property.spatial ? 1 : dimensions;
+                for (size_t dimension = 0; dimension < graphDimensions; ++dimension) {
                     std::vector<ImVec2> points;
                     points.reserve(static_cast<size_t>(sampleCount));
                     for (int i = 0; i < sampleCount; ++i) {
                         const float x = graphMin.x + (graphMax.x - graphMin.x) * i / (sampleCount - 1);
                         const double time = s_timelineStart + (x - rp2.x) / pps;
                         const Project::Tick compTime = Project::Tick::from_seconds_f64(time);
-                        const auto value = property.value_at(layer.layerTime(compTime));
-                        const double component = numericComponent(value, dimension);
+                        const double component = graphComponentAt(layer, property, compTime, dimension);
                         const double unit = std::clamp((component - graphValueMin) /
                             (graphValueMax - graphValueMin), 0.0, 1.0);
                         const float y = graphMax.y - static_cast<float>(unit) * (graphMax.y - graphMin.y);
@@ -1306,17 +1458,22 @@ static void drawTimeline(Project::Project* proj) {
                     const ImU32 color = graphColors[curveIndex % (sizeof(graphColors) / sizeof(graphColors[0]))];
                     for (size_t ki = 0; ki < property.keys.size(); ++ki) {
                         auto& key = property.keys[ki];
-                        const double value = numericComponent(key.value, dimension);
-                        if (!std::isfinite(value)) continue;
                         const Project::Tick compTime = layer.compTime(key.time);
+                        const double value = s_graphSpeed
+                            ? graphComponentAt(layer, property, compTime, dimension)
+                            : numericComponent(key.value, dimension);
+                        if (!std::isfinite(value)) continue;
                         const float x = rp2.x + static_cast<float>((compTime.seconds() - s_timelineStart) * pps);
                         if (x < graphMin.x - 8.0f || x > graphMax.x + 8.0f) continue;
                         const double unit = std::clamp((value - graphValueMin) /
                             (graphValueMax - graphValueMin), 0.0, 1.0);
                         const float y = graphMax.y - static_cast<float>(unit) * (graphMax.y - graphMin.y);
                         trDl->AddCircleFilled({x, y}, 4.0f, color);
+                        for (bool out : {false, true})
+                            graphEaseHandle(proj, layer, property, ki, dimension, out, trDl,
+                                            graphMin, graphMax, graphValueMin, graphValueMax, pps);
                         keyframeMarker(proj, layer, property, key, ki, dimension, trDl,
-                                       {x, y}, true, graphValueMin, graphValueMax,
+                                       {x, y}, true, !s_graphSpeed, graphValueMin, graphValueMax,
                                        graphMax.y - graphMin.y);
                     }
                     ++curveIndex;
@@ -1412,7 +1569,7 @@ static void drawTimeline(Project::Project* proj) {
                 const float x = rp2.x + static_cast<float>((compTime.seconds() - s_timelineStart) * pps);
                 if (x < rp2.x - 8.0f || x > rp2.x + barAreaW + 8.0f) continue;
                 keyframeMarker(proj, layer, property, key, ki, 0, trDl,
-                               {x, brp.y + ROW_H * 0.5f}, false, 0.0, 1.0, ROW_H);
+                               {x, brp.y + ROW_H * 0.5f}, false, false, 0.0, 1.0, ROW_H);
             }
         }
         if (drag.layer == layer.id.v && !ImGui::IsMouseDown(0))
@@ -1485,6 +1642,21 @@ static void drawTimeline(Project::Project* proj) {
     const ImVec2 bp0 = {p0.x, p0.y + hdrH + colHdrH + layerAreaH};
     hLine(dl, bp0.x, bp0.x + avW, bp0.y);
     dl->AddRectFilled(bp0, {bp0.x + avW, bp0.y + botBarH}, C_APP_BG);
+
+    if (s_graphEditor) {
+        ImGui::SetCursorScreenPos({bp0.x + leftSideW + 8.0f, bp0.y + 2.0f});
+        if (ImGui::SmallButton("Value Graph"))
+            s_graphSpeed = false;
+        ImGui::SameLine(0, 3);
+        if (ImGui::SmallButton("Speed Graph"))
+            s_graphSpeed = true;
+        ImGui::SameLine(0, 3);
+        if (ImGui::SmallButton("Fit Graph")) {
+            s_timelineStart = 0.0;
+            s_timelinePps = 0.0;
+            s_timelineZoom = 0.0f;
+        }
+    }
 
     ImGui::SetCursorScreenPos({bp0.x + 8.0f, bp0.y + 2.0f});
     if (ImGui::SmallButton(L("Toggle Switches / Modes"))) {}
