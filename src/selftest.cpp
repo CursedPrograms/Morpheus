@@ -13,6 +13,8 @@
 #include "icons.h"
 #include "keyframe.h"
 #include "props.h"
+#include "raster.h"
+#include "render.h"
 
 #include <cstdio>
 #include <cstdlib>
@@ -1323,6 +1325,724 @@ static bool t_icons_keyframes_are_drawn_without_a_dark_outline() {
 }
 
 // =====================================================================
+// COLOR & BLEND TESTS (after EffectCraft crates/color/src/blend.rs)
+// =====================================================================
+
+static inline Raster::Px test_opaque(float v) {
+    return {v, v, v, 1.0f};
+}
+
+// after EffectCraft crates/color/src/blend.rs test opaque_formulas
+static bool t_blend_opaque_formulas() {
+    auto d = test_opaque(0.6f);
+    auto s = test_opaque(0.3f);
+    auto r = [&](Raster::BlendMode m) { return Raster::blend_pixel(m, d, s, 0.5f)[0]; };
+    if (std::abs(r(Raster::BlendMode::Normal) - 0.3f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Multiply) - 0.18f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Screen) - (0.6f + 0.3f - 0.18f)) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Add) - 0.9f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Difference) - 0.3f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Darken) - 0.3f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Lighten) - 0.6f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Subtract) - 0.3f) >= 1e-6f) return false;
+    if (!(std::abs(r(Raster::BlendMode::Divide) - 1.0f) < 1e-6f || r(Raster::BlendMode::Divide) > 1.0f)) return false;
+    if (std::abs(r(Raster::BlendMode::LinearBurn) - 0.0f) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Exclusion) - (0.9f - 0.36f)) >= 1e-6f) return false;
+    if (std::abs(r(Raster::BlendMode::Overlay) - (0.3f + 0.2f - 0.06f)) >= 1e-6f) return false;
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test transparent_source_keeps_destination
+static bool t_blend_transparent_source_keeps_destination() {
+    Raster::Px d = {0.2f, 0.3f, 0.4f, 0.8f};
+    for (int i = 0; i <= (int)Raster::BlendMode::LuminescentPremul; ++i) {
+        Raster::BlendMode m = (Raster::BlendMode)i;
+        if (Raster::blend_mode_is_stencil(m)) continue;
+        auto o = Raster::blend_pixel(m, d, {0.0f, 0.0f, 0.0f, 0.0f}, 0.5f);
+        for (int c = 0; c < 4; ++c) {
+            if (std::abs(o[c] - d[c]) >= 1e-6f) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test source_over_transparent_destination
+static bool t_blend_source_over_transparent_destination() {
+    Raster::Px s = {0.25f, 0.1f, 0.05f, 0.5f};
+    Raster::BlendMode modes[] = {Raster::BlendMode::Normal, Raster::BlendMode::Multiply, Raster::BlendMode::Screen, Raster::BlendMode::Hue, Raster::BlendMode::Overlay};
+    for (auto m : modes) {
+        auto o = Raster::blend_pixel(m, {0.0f, 0.0f, 0.0f, 0.0f}, s, 0.9f);
+        for (int c = 0; c < 4; ++c) {
+            if (std::abs(o[c] - s[c]) >= 1e-6f) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test stencil
+static bool t_blend_stencil() {
+    Raster::Px d = {0.5f, 0.5f, 0.5f, 1.0f};
+    auto zero = Raster::blend_pixel(Raster::BlendMode::StencilAlpha, d, {0.0f, 0.0f, 0.0f, 0.0f}, 0.0f);
+    if (zero != Raster::Px{0.0f, 0.0f, 0.0f, 0.0f}) return false;
+    auto sil = Raster::blend_pixel(Raster::BlendMode::SilhouetteAlpha, d, {0.0f, 0.0f, 0.0f, 0.0f}, 0.0f);
+    if (sil != d) return false;
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test hdr_modes
+static bool t_blend_hdr_modes() {
+    Raster::Px d = {2.0f, 2.0f, 2.0f, 1.0f};
+    Raster::Px s = {0.5f, 0.5f, 0.5f, 1.0f};
+    if (std::abs(Raster::blend_pixel(Raster::BlendMode::Add, d, s, 0.5f)[0] - 2.5f) >= 1e-6f) return false;
+    if (std::abs(Raster::blend_pixel(Raster::BlendMode::Screen, d, s, 0.5f)[0] - 1.5f) >= 1e-6f) return false;
+    if (Raster::blend_pixel(Raster::BlendMode::SoftLight, d, s, 0.5f)[0] > 1.0f) return false;
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test after_effects_32bpc_formulas
+static bool t_blend_ae_32bpc_formulas() {
+    auto at = [](Raster::BlendMode m, float b, float o, float k) {
+        return Raster::blend_pixel(m, test_opaque(b), {o * k, o * k, o * k, k}, 0.5f)[0];
+    };
+    auto close = [](float a, float e) { return std::abs(a - e) < 1e-5f; };
+    std::pair<float, float> pairs[] = {{0.4f, 0.5f}, {0.8f, 0.9f}, {0.1f, 0.3f}};
+    for (auto [b, o] : pairs) {
+        float k = 0.15f;
+        if (!close(at(Raster::BlendMode::ClassicColorDodge, b, o, k), std::min(1.0f, b / (1.0f - k * o)))) return false;
+        if (!close(at(Raster::BlendMode::ClassicDifference, b, o, k), std::abs(b - k * o))) return false;
+        if (!close(at(Raster::BlendMode::ClassicColorBurn, b, o, k), 1.0f - (1.0f - b) / (1.0f - k * (1.0f - o)))) return false;
+    }
+    if (!close(at(Raster::BlendMode::ClassicDifference, 0.6f, 0.3f, 1.0f), 0.3f)) return false;
+    float b = 0.7f, o = 3.0f;
+    if (!close(at(Raster::BlendMode::Exclusion, b, o, 1.0f), b + o - 2.0f * b * o)) return false;
+    float s = 2.0f * b - 1.0f;
+    if (!close(at(Raster::BlendMode::Overlay, b, o, 1.0f), o + s - o * s)) return false;
+    if (!close(at(Raster::BlendMode::ColorBurn, 0.0f, 1.35f, 0.15f), 0.15f * (1.0f - 1.0f / 1.35f))) return false;
+    if (!close(at(Raster::BlendMode::ClassicColorBurn, 0.0f, 0.1f, 1.0f), -9.0f)) return false;
+    auto l = Raster::blend_pixel(Raster::BlendMode::Luminosity, {0.2f, 0.4f, 0.6f, 1.0f}, {2.0f, 2.0f, 2.0f, 1.0f}, 0.5f);
+    auto e = Raster::set_lum({0.2f, 0.4f, 0.6f}, 2.0f);
+    for (int i = 0; i < 3; ++i) {
+        if (!close(l[i], e[i])) return false;
+    }
+    if (std::abs(l[0] - 1.0f) <= 0.1f) return false;
+    return true;
+}
+
+// after EffectCraft crates/color/src/blend.rs test names_roundtrip
+static bool t_blend_names_roundtrip() {
+    for (int i = 0; i <= (int)Raster::BlendMode::LuminescentPremul; ++i) {
+        Raster::BlendMode m = (Raster::BlendMode)i;
+        auto name = Raster::blend_mode_label(m);
+        auto opt = Raster::blend_mode_from_name(name);
+        if (!opt.has_value() || *opt != m) return false;
+    }
+    if (Raster::blend_mode_from_name("soft-light") != Raster::BlendMode::SoftLight) return false;
+    return true;
+}
+
+// =====================================================================
+// RASTER TESTS (after EffectCraft crates/raster/src/lib.rs)
+// =====================================================================
+
+static inline uint32_t f32_to_bits(float f) {
+    uint32_t u = 0;
+    std::memcpy(&u, &f, sizeof(float));
+    return u;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test u8_levels_expand_to_the_quantised_pixel
+static bool t_raster_u8_levels_expand() {
+    std::vector<float> values;
+    for (int i = 0; i <= 255 * 4; ++i) values.push_back((float)i / (255.0f * 4.0f));
+    values.push_back(-0.0f);
+    values.push_back(-1.0f);
+    values.push_back(1.0f);
+    values.push_back(1.5f);
+    values.push_back(std::numeric_limits<float>::quiet_NaN());
+    values.push_back(std::numeric_limits<float>::infinity());
+    values.push_back(0.5f / 255.0f);
+    values.push_back(254.5f / 255.0f);
+    float alphas[] = {1.0f, 0.5f, 0.2f, 0.0f, 2.0f, std::numeric_limits<float>::quiet_NaN()};
+    for (float a : alphas) {
+        for (float v : values) {
+            Raster::Px p = {v, 1.0f - v, v * 0.5f, a};
+            Raster::Px want = p;
+            Raster::quantize_px(want, 255.0f, 1.0f / 255.0f);
+            auto got = Raster::expand_u8(Raster::quantize_px_u8(p));
+            for (int c = 0; c < 4; ++c) {
+                if (f32_to_bits(got[c]) != f32_to_bits(want[c])) return false;
+            }
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test dither_keeps_exact_codes_and_averages_the_rest
+static bool t_raster_dither_exact_and_average() {
+    for (uint32_t code = 0; code <= 255; ++code) {
+        float v = (float)code / 255.0f;
+        std::pair<uint32_t, uint32_t> pts[] = {{0, 0}, {1, 0}, {17, 3}, {1919, 1079}, {4095, 4095}};
+        for (auto [x, y] : pts) {
+            if ((uint32_t)Raster::dither_u8(v, x, y) != code) return false;
+        }
+    }
+    if (Raster::dither_u8(-3.0f, 5, 5) != 0) return false;
+    if (Raster::dither_u8(7.0f, 5, 5) != 255) return false;
+    if (Raster::dither_u8(std::numeric_limits<float>::quiet_NaN(), 5, 5) != 0) return false;
+    float v = (100.0f + 0.3f) / 255.0f;
+    uint32_t n = 64;
+    uint32_t sum = 0;
+    for (uint32_t i = 0; i < n * n; ++i) sum += (uint32_t)Raster::dither_u8(v, i % n, i / n);
+    float mean = (float)sum / (float)(n * n);
+    if (std::abs(mean - 100.3f) >= 0.03f) return false;
+    if (Raster::dither_u8(v, 9, 4) != Raster::dither_u8(v, 9, 4)) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test dithered_conversions_match_the_plain_ones_on_exact_codes
+static bool t_raster_dithered_conversions_match() {
+    std::vector<uint8_t> src = {255, 128, 0, 255, 10, 20, 30, 255, 0, 0, 0, 255, 1, 2, 3, 255};
+    auto img = Raster::Image::from_rgba8(2, 2, src);
+    if (img.to_rgba8_dithered() != img.to_rgba8()) return false;
+    std::array<float, 3> bg = {0.0f, 0.0f, 0.0f};
+    if (img.to_rgba8_over_dithered(bg) != img.to_rgba8_over(bg)) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test rgba8_roundtrip
+static bool t_raster_rgba8_roundtrip() {
+    std::vector<uint8_t> src = {255, 128, 0, 255, 10, 20, 30, 128, 0, 0, 0, 0, 1, 2, 3, 4};
+    auto img = Raster::Image::from_rgba8(2, 2, src);
+    auto back = img.to_rgba8();
+    for (size_t i = 0; i < 4; ++i) {
+        const uint8_t* a = &src[i * 4];
+        const uint8_t* b = &back[i * 4];
+        if (a[3] >= 128) {
+            for (int c = 0; c < 4; ++c) {
+                if (std::abs((int)a[c] - (int)b[c]) > 1) return false;
+            }
+        } else {
+            if (std::abs((int)a[3] - (int)b[3]) > 1) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test bilinear_at_centres_is_exact
+static bool t_raster_bilinear_centres() {
+    Raster::Image img(3, 3);
+    Raster::Px p = {0.5f, 0.25f, 0.125f, 1.0f};
+    img.set(1, 1, p);
+    if (img.sample_bilinear(1.5, 1.5) != p) return false;
+    auto half = img.sample_bilinear(2.0, 1.5);
+    if (std::abs(half[3] - 0.5f) >= 1e-6f) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test alpha_bounds_found
+static bool t_raster_alpha_bounds() {
+    Raster::Image img(10, 10);
+    img.set(3, 4, {1.0f, 1.0f, 1.0f, 1.0f});
+    img.set(6, 7, {1.0f, 1.0f, 1.0f, 1.0f});
+    auto b = img.alpha_bounds();
+    if (!b.has_value()) return false;
+    if (std::get<0>(*b) != 3 || std::get<1>(*b) != 4 || std::get<2>(*b) != 7 || std::get<3>(*b) != 8) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test noise_in_range
+static bool t_raster_noise_in_range() {
+    for (uint32_t i = 0; i < 1000; ++i) {
+        float n = Raster::hash_noise(i, i * 7, 3);
+        if (n < 0.0f || n >= 1.0f) return false;
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test padded_bounds_hostile_pad_at_the_api
+static bool t_raster_padded_bounds_hostile() {
+    Raster::Image img(29990, 2);
+    img.set(29989, 1, {1.0f, 0.0f, 0.0f, 1.0f});
+    auto out = img.padded(std::numeric_limits<uint32_t>::max());
+    if (out.width != Raster::MAX_PADDED_SIDE || out.height != 12) return false;
+    if (out.get(29994, 6) != Raster::Px{1.0f, 0.0f, 0.0f, 1.0f}) return false;
+    if (out.get(0, 0) != Raster::Px{0.0f, 0.0f, 0.0f, 0.0f}) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/lib.rs test padded_leaves_legit_pads_untouched
+static bool t_raster_padded_legit() {
+    Raster::Image img(8, 6);
+    img.set(3, 2, {1.0f, 0.0f, 0.0f, 1.0f});
+    auto out = img.padded(4);
+    if (out.width != 16 || out.height != 14) return false;
+    if (out.get(7, 6) != Raster::Px{1.0f, 0.0f, 0.0f, 1.0f}) return false;
+    return true;
+}
+
+// =====================================================================
+// WARP TESTS (after EffectCraft crates/raster/src/warp.rs)
+// =====================================================================
+
+// after EffectCraft crates/raster/src/warp.rs test identity_warp_copies
+static bool t_warp_identity_copies() {
+    Raster::Image src(4, 4);
+    src.set(1, 2, {0.5f, 0.5f, 0.5f, 1.0f});
+    Raster::Image dst(4, 4);
+    Raster::composite_warp(dst, src, Raster::Mat3::IDENTITY);
+    if (dst.get(1, 2) != Raster::Px{0.5f, 0.5f, 0.5f, 1.0f}) return false;
+    if (dst.get(0, 0) != Raster::Px{0.0f, 0.0f, 0.0f, 0.0f}) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test translate_by_integer
+static bool t_warp_translate_by_integer() {
+    Raster::Image src(4, 4);
+    src.set(0, 0, {1.0f, 1.0f, 1.0f, 1.0f});
+    Raster::Image dst(8, 8);
+    Raster::composite_warp(dst, src, Raster::Mat3::translate(Raster::vec2(3.0, 2.0)));
+    if (dst.get(3, 2) != Raster::Px{1.0f, 1.0f, 1.0f, 1.0f}) return false;
+    return true;
+}
+
+static Raster::Image make_test_image(uint32_t w, uint32_t h, uint32_t seed) {
+    Raster::Image img(w, h);
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            float a = ((x + y) % 7 == 0) ? 0.0f : Raster::hash_noise(x, y, seed);
+            img.set(x, y, {
+                Raster::hash_noise(x, y, seed + 1) * a,
+                Raster::hash_noise(x, y, seed + 2) * a,
+                Raster::hash_noise(x, y, seed + 3) * a,
+                a
+            });
+        }
+    }
+    return img;
+}
+
+static Raster::Image make_sparse_image(uint32_t w, uint32_t h) {
+    Raster::Image img(w, h);
+    float cx = (float)w / 2.0f, cy = (float)h / 2.0f;
+    float r = (float)std::min(w, h) * 0.4f;
+    for (uint32_t y = 0; y < h; ++y) {
+        for (uint32_t x = 0; x < w; ++x) {
+            float dx = (float)x + 0.5f - cx;
+            float dy = (float)y + 0.5f - cy;
+            float d = std::abs(std::hypot(dx, dy) - r);
+            if (d < 1.5f) {
+                float a = 1.0f - d / 1.5f;
+                img.set(x, y, {0.2f * a, 0.6f * a, a, a});
+            }
+        }
+    }
+    img.set(3, 2, {0.5f, 0.5f, 0.5f, 0.5f});
+    img.set(w - 1, h - 1, {1.0f, 1.0f, 1.0f, 1.0f});
+    img.set(w / 2, 1, {0.0f, 0.0f, 0.0f, -0.0f});
+    return img;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test fast_path_matches_reference
+static bool t_warp_fast_matches_reference() {
+    auto src = make_test_image(37, 23, 5);
+    Raster::Mat3 mats[] = {
+        Raster::Mat3::IDENTITY,
+        Raster::Mat3::translate(Raster::vec2(5.0, -3.0)),
+        Raster::Mat3::translate(Raster::vec2(-40.0, 2.0)),
+        Raster::Mat3::translate(Raster::vec2(3.25, 7.5)),
+        Raster::Mat3::translate(Raster::vec2(20.0, 10.0)) * Raster::Mat3::rotate_deg(23.0) * Raster::Mat3::scale(Raster::vec2(1.3, 0.8)),
+        Raster::Mat3::translate(Raster::vec2(30.0, 5.0)) * Raster::Mat3::rotate_deg(-120.0) * Raster::Mat3::scale(Raster::vec2(0.7, 0.7)),
+        Raster::Mat3::translate(Raster::vec2(10.0, 10.0)) * Raster::Mat3::scale(Raster::vec2(-1.0, 1.0)),
+        Raster::Mat3::scale(Raster::vec2(0.3, 0.3)),
+    };
+    Raster::BlendMode modes[] = {
+        Raster::BlendMode::Normal, Raster::BlendMode::Add, Raster::BlendMode::Multiply,
+        Raster::BlendMode::Screen, Raster::BlendMode::Dissolve, Raster::BlendMode::Overlay
+    };
+    for (const auto& m : mats) {
+        for (auto mode : modes) {
+            for (auto sampling : {Raster::Sampling::Nearest, Raster::Sampling::Bilinear, Raster::Sampling::Bicubic}) {
+                for (float opacity : {1.0f, 0.6f}) {
+                    Raster::WarpOpts opts;
+                    opts.sampling = sampling;
+                    opts.opacity = opacity;
+                    opts.mode = mode;
+                    opts.seed = 9;
+                    auto a = make_test_image(48, 40, 77);
+                    auto b = a;
+                    Raster::composite_warp(a, src, m, opts);
+                    Raster::composite_warp_reference(b, src, m, opts);
+                    for (size_t i = 0; i < a.data.size(); ++i) {
+                        for (int c = 0; c < 4; ++c) {
+                            if (std::abs(a.data[i][c] - b.data[i][c]) >= 1e-4f) return false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test clear_tiles_hold_only_transparent_taps
+static bool t_warp_clear_tiles() {
+    auto img = make_sparse_image(150, 97);
+    Raster::ClearTiles clear(img);
+    size_t skipped = 0;
+    for (size_t y = 0; y < img.height - 1; ++y) {
+        for (size_t x = 0; x < img.width - 1; ++x) {
+            if (clear.is_clear(x, y)) {
+                ++skipped;
+                for (int dy : {0, 1}) {
+                    for (int dx : {0, 1}) {
+                        if (img.get((int64_t)x + dx, (int64_t)y + dy)[3] != 0.0f) return false;
+                    }
+                }
+            }
+        }
+    }
+    return skipped > 100 * 70;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test changed_rect_covers_the_changed_pixels
+static bool t_warp_changed_rect() {
+    auto src = make_sparse_image(90, 70);
+    Raster::Mat3 mats[] = {
+        Raster::Mat3::translate(Raster::vec2(7.0, 3.0)),
+        Raster::Mat3::translate(Raster::vec2(10.25, 4.5)),
+        Raster::Mat3::translate(Raster::vec2(60.0, 50.0)) * Raster::Mat3::rotate_deg(33.0) * Raster::Mat3::scale(Raster::vec2(0.9, 1.2)) * Raster::Mat3::translate(Raster::vec2(-45.0, -35.0)),
+        Raster::Mat3::translate(Raster::vec2(-30.0, -20.0)),
+        Raster::Mat3::scale(Raster::vec2(0.3, 0.3)),
+    };
+    for (const auto& m : mats) {
+        for (auto mode : {Raster::BlendMode::Normal, Raster::BlendMode::Add, Raster::BlendMode::Dissolve}) {
+            Raster::WarpOpts opts;
+            opts.mode = mode;
+            opts.seed = 3;
+            auto before = make_test_image(120, 100, 4);
+            auto a = before;
+            auto r = Raster::composite_warp_changed(a, src, m, opts, std::nullopt);
+            if (!r.has_value()) return false;
+            uint32_t x0 = (*r)[0], y0 = (*r)[1], x1 = (*r)[2], y1 = (*r)[3];
+            for (size_t i = 0; i < a.data.size(); ++i) {
+                uint32_t x = (uint32_t)i % a.width;
+                uint32_t y = (uint32_t)i / a.width;
+                if (a.data[i] != before.data[i]) {
+                    if (!(x >= x0 && x < x1 && y >= y0 && y < y1)) return false;
+                }
+            }
+            auto b = before;
+            Raster::composite_warp_reference(b, src, m, opts);
+            for (size_t i = 0; i < a.data.size(); ++i) {
+                for (int c = 0; c < 4; ++c) {
+                    if (std::abs(a.data[i][c] - b.data[i][c]) >= 1e-4f) return false;
+                }
+            }
+        }
+    }
+    Raster::Image dst(10, 10);
+    Raster::Image dummySrc(4, 4);
+    Raster::WarpOpts def;
+    auto r0 = Raster::composite_warp_changed(dst, dummySrc, Raster::Mat3::IDENTITY, def, std::nullopt);
+    if (!r0.has_value() || (*r0)[0] != std::numeric_limits<uint32_t>::max() || (*r0)[1] != std::numeric_limits<uint32_t>::max() || (*r0)[2] != 0 || (*r0)[3] != 0) return false;
+    Raster::WarpOpts stencil;
+    stencil.mode = Raster::BlendMode::StencilAlpha;
+    auto r_stencil = Raster::composite_warp_changed(dst, src, Raster::Mat3::IDENTITY, stencil, 255.0f);
+    if (r_stencil.has_value()) return false;
+    return true;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test quantize_while_blending_matches_quantizing_after
+static bool t_warp_quantize_matches() {
+    auto src = make_sparse_image(90, 70);
+    Raster::Mat3 mats[] = {
+        Raster::Mat3::translate(Raster::vec2(7.0, 3.0)),
+        Raster::Mat3::translate(Raster::vec2(60.0, 50.0)) * Raster::Mat3::rotate_deg(33.0) * Raster::Mat3::translate(Raster::vec2(-45.0, -35.0))
+    };
+    for (const auto& m : mats) {
+        for (auto mode : {Raster::BlendMode::Normal, Raster::BlendMode::Screen, Raster::BlendMode::Dissolve}) {
+            std::pair<float, float> levels_op[] = {{255.0f, 1.0f}, {32768.0f, 0.7f}};
+            for (auto [levels, opacity] : levels_op) {
+                auto before = make_test_image(120, 100, 8);
+                for (auto& p : before.data) Raster::quantize_px(p, levels, 1.0f / levels);
+                Raster::WarpOpts opts;
+                opts.mode = mode;
+                opts.opacity = opacity;
+                opts.seed = 5;
+                auto after = before;
+                auto r = Raster::composite_warp_changed(after, src, m, opts, std::nullopt);
+                if (!r.has_value()) return false;
+                uint32_t x0 = (*r)[0], y0 = (*r)[1], x1 = (*r)[2], y1 = (*r)[3];
+                for (uint32_t y = y0; y < y1; ++y) {
+                    for (uint32_t x = x0; x < x1; ++x) {
+                        size_t i = after.idx(x, y);
+                        Raster::quantize_px(after.data[i], levels, 1.0f / levels);
+                    }
+                }
+                auto fused = before;
+                auto rf = Raster::composite_warp_changed(fused, src, m, opts, levels);
+                if (rf != r) return false;
+                for (size_t i = 0; i < fused.data.size(); ++i) {
+                    for (int c = 0; c < 4; ++c) {
+                        if (f32_to_bits(fused.data[i][c]) != f32_to_bits(after.data[i][c])) return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test accumulate_matches_per_sample_images
+static bool t_warp_accumulate() {
+    auto src = make_test_image(30, 20, 11);
+    std::array<Raster::Vec2, 4> quad = {Raster::vec2(5.0, 4.0), Raster::vec2(40.0, 2.0), Raster::vec2(44.0, 30.0), Raster::vec2(2.0, 35.0)};
+    auto persp = Raster::Mat3::square_to_quad(quad) * Raster::Mat3::scale(Raster::vec2(1.0 / 30.0, 1.0 / 20.0));
+    Raster::Mat3 mats[] = {
+        Raster::Mat3::translate(Raster::vec2(3.0, 4.0)),
+        Raster::Mat3::translate(Raster::vec2(5.5, 4.25)) * Raster::Mat3::rotate_deg(12.0),
+        persp
+    };
+    float k = 1.0f / 3.0f;
+    Raster::Image fast(48, 40);
+    Raster::Image slow(48, 40);
+    for (const auto& m : mats) {
+        Raster::accumulate_warp(fast, src, m, Raster::Sampling::Bilinear, k);
+        Raster::Image img(48, 40);
+        Raster::composite_warp_reference(img, src, m);
+        for (size_t i = 0; i < slow.data.size(); ++i) {
+            for (int c = 0; c < 4; ++c) slow.data[i][c] += img.data[i][c] * k;
+        }
+    }
+    for (size_t i = 0; i < fast.data.size(); ++i) {
+        for (int c = 0; c < 4; ++c) {
+            if (std::abs(fast.data[i][c] - slow.data[i][c]) >= 1e-4f) return false;
+        }
+    }
+    return true;
+}
+
+// after EffectCraft crates/raster/src/warp.rs test downscale_preserves_average
+static bool t_warp_downscale() {
+    auto src = Raster::Image::filled(64, 64, {0.25f, 0.5f, 0.75f, 1.0f});
+    auto out = Raster::resample(src, 8, 8);
+    auto p = out.get(4, 4);
+    if (std::abs(p[1] - 0.5f) >= 1e-4f || std::abs(p[3] - 1.0f) >= 1e-4f) return false;
+    return true;
+}
+
+// =====================================================================
+// RENDER TESTS (after EffectCraft crates/render/src/tests.rs)
+// =====================================================================
+
+static std::tuple<Proj, uint64_t, Composition> render_setup() {
+    Proj p;
+    p.nextId = 1;
+    Composition comp;
+    comp.id.v = p.alloc();
+    comp.name = "Comp";
+    comp.width = 200;
+    comp.height = 100;
+    comp.frameRate = FrameRate::FPS_30;
+    comp.duration = Tick::from_seconds_f64(2.0);
+    p.compositions.push_back(comp);
+    p.activeComp = 0;
+    return {p, comp.id.v, comp};
+}
+
+static Layer make_solid(Proj& p, const Composition& comp, std::array<float, 3> color, uint32_t w, uint32_t h) {
+    Layer l;
+    l.id.v = p.alloc();
+    l.name = "Solid";
+    l.kind = LayerKind::Solid;
+    l.width = w;
+    l.height = h;
+    l.solidR = color[0];
+    l.solidG = color[1];
+    l.solidB = color[2];
+    l.solidA = 1.0f;
+    l.inPt = Tick::ZERO;
+    l.outPt = comp.duration;
+    l.startTime = Tick::ZERO;
+    l.stretch = 1.0;
+    l.xform.anchorX = (float)w / 2.0f;
+    l.xform.anchorY = (float)h / 2.0f;
+    l.xform.posX = (float)comp.width / 2.0f;
+    l.xform.posY = (float)comp.height / 2.0f;
+    l.xform.scaleX = 100.0f;
+    l.xform.scaleY = 100.0f;
+    l.xform.opacity = 100.0f;
+    l.xform.rotation = 0.0f;
+    uint64_t next = p.nextId;
+    l.initProps(&next, l.xform.anchorX, l.xform.anchorY, l.xform.posX, l.xform.posY);
+    p.nextId = next;
+    return l;
+}
+
+// after EffectCraft crates/render/src/tests.rs test solid_fills_comp
+static bool t_render_solid_fills_comp() {
+    auto [p, cid, comp] = render_setup();
+    auto l = make_solid(p, comp, {1.0f, 0.0f, 0.0f}, 200, 100);
+    p.compositions[0].layers.push_back(l);
+    auto img = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    if (img.get(10, 10) != Raster::Px{1.0f, 0.0f, 0.0f, 1.0f}) return false;
+    if (img.get(199, 99) != Raster::Px{1.0f, 0.0f, 0.0f, 1.0f}) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test position_keyframes_move_layer
+static bool t_render_position_keyframes_move_layer() {
+    auto [p, cid, comp] = render_setup();
+    auto l = make_solid(p, comp, {0.0f, 1.0f, 0.0f}, 20, 20);
+    auto* pos = l.props.prop_mut("transform/position");
+    if (!pos) return false;
+    pos->keys = {
+        KeyframeModel::Keyframe(Tick::ZERO, KeyframeModel::Value::Vec3(20.0, 50.0, 0.0)),
+        KeyframeModel::Keyframe(Tick::from_seconds_f64(1.0), KeyframeModel::Value::Vec3(180.0, 50.0, 0.0))
+    };
+    p.compositions[0].layers.push_back(l);
+    auto a = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    if (!(a.get(20, 50)[3] > 0.99f && a.get(100, 50)[3] < 0.01f)) return false;
+    auto b = Render::render_frame(&p, cid, Tick::from_seconds_f64(0.5), 1.0);
+    if (!(b.get(100, 50)[3] > 0.99f && b.get(20, 50)[3] < 0.01f)) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test opacity_and_blend_modes
+static bool t_render_opacity_and_blend_modes() {
+    auto [p, cid, comp] = render_setup();
+    auto bottom = make_solid(p, comp, {0.5f, 0.5f, 0.5f}, 200, 100);
+    auto top = make_solid(p, comp, {0.5f, 0.5f, 0.5f}, 200, 100);
+    top.blendMode = Raster::BlendMode::Multiply;
+    p.compositions[0].layers.push_back(top);
+    p.compositions[0].layers.push_back(bottom);
+    auto img = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    if (std::abs(img.get(50, 50)[0] - 0.25f) >= 1e-4f) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test half_resolution
+static bool t_render_half_resolution() {
+    auto [p, cid, comp] = render_setup();
+    auto l = make_solid(p, comp, {1.0f, 1.0f, 1.0f}, 200, 100);
+    p.compositions[0].layers.push_back(l);
+    auto img = Render::render_frame(&p, cid, Tick::ZERO, 0.5);
+    if (img.width != 100 || img.height != 50) return false;
+    if (std::abs(img.get(50, 25)[3] - 1.0f) >= 1e-4f) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test mask_cuts_layer
+static bool t_render_mask_cuts_layer() {
+    auto [p, cid, comp] = render_setup();
+    auto l = make_solid(p, comp, {1.0f, 1.0f, 1.0f}, 200, 100);
+    uint64_t next = p.nextId;
+    Props::Ids ids(&next);
+    auto m = Props::Build::mask(ids, "Mask 1", KeyframeModel::ShapePath::rect({50.0, 50.0}, 40.0, 40.0), Props::MaskMode::Add, {255, 255, 0});
+    p.nextId = next;
+    l.props.sub_mut("masks")->children.push_back(Props::Node(m));
+    p.compositions[0].layers.push_back(l);
+    auto img = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    if (img.get(50, 50)[3] <= 0.99f) return false;
+    if (img.get(150, 50)[3] >= 0.01f) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test first_intersect_and_darken_keep_their_rectangle
+static bool t_render_first_intersect_darken() {
+    auto do_render = [](const std::vector<Props::MaskMode>& modes, const std::vector<std::array<double, 2>>& centers) {
+        auto [p, cid, comp] = render_setup();
+        auto l = make_solid(p, comp, {1.0f, 1.0f, 1.0f}, 200, 100);
+        for (size_t i = 0; i < modes.size(); ++i) {
+            uint64_t next = p.nextId;
+            Props::Ids ids(&next);
+            auto m = Props::Build::mask(ids, "Mask " + std::to_string(i + 1), KeyframeModel::ShapePath::rect(centers[i], 40.0, 40.0), modes[i], {255, 255, 0});
+            p.nextId = next;
+            l.props.sub_mut("masks")->children.push_back(Props::Node(m));
+        }
+        p.compositions[0].layers.push_back(l);
+        return Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    };
+
+    Props::MaskMode single_modes[] = {
+        Props::MaskMode::Intersect, Props::MaskMode::Darken, Props::MaskMode::Add,
+        Props::MaskMode::Lighten, Props::MaskMode::Difference
+    };
+    for (auto mode : single_modes) {
+        auto img = do_render({mode}, {{50.0, 50.0}});
+        if (img.get(50, 50)[3] <= 0.99f) return false;
+        if (img.get(150, 50)[3] >= 0.01f) return false;
+    }
+    auto hole = do_render({Props::MaskMode::Subtract}, {{50.0, 50.0}});
+    if (hole.get(50, 50)[3] >= 0.01f) return false;
+    if (hole.get(150, 50)[3] <= 0.99f) return false;
+
+    auto overlap = do_render({Props::MaskMode::Add, Props::MaskMode::Intersect}, {{50.0, 50.0}, {70.0, 50.0}});
+    if (overlap.get(50, 50)[3] <= 0.99f) return false;
+    if (overlap.get(35, 50)[3] >= 0.01f) return false;
+    if (overlap.get(85, 50)[3] >= 0.01f) return false;
+
+    auto darkened = do_render({Props::MaskMode::Add, Props::MaskMode::Darken}, {{50.0, 50.0}, {70.0, 50.0}});
+    if (!(darkened.get(50, 50)[3] > 0.99f && darkened.get(35, 50)[3] < 0.01f && darkened.get(85, 50)[3] < 0.01f)) return false;
+
+    auto both = do_render({Props::MaskMode::Intersect, Props::MaskMode::Add}, {{50.0, 50.0}, {150.0, 50.0}});
+    if (!(both.get(50, 50)[3] > 0.99f && both.get(150, 50)[3] > 0.99f && both.get(100, 50)[3] < 0.01f)) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test track_matte_alpha
+static bool t_render_track_matte_alpha() {
+    auto [p, cid, comp] = render_setup();
+    auto matte = make_solid(p, comp, {1.0f, 1.0f, 1.0f}, 50, 50);
+    matte.props.prop_mut("transform/position")->value = KeyframeModel::Value::Vec3(50.0, 50.0, 0.0);
+    matte.switches.video = false;
+    auto fill = make_solid(p, comp, {0.0f, 0.0f, 1.0f}, 200, 100);
+    fill.hasMatte = true;
+    fill.matteLayer = matte.id;
+    fill.matteKind = MatteKind::Alpha;
+    p.compositions[0].layers.push_back(matte);
+    p.compositions[0].layers.push_back(fill);
+    auto img = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+    if (img.get(50, 50)[2] <= 0.99f) return false;
+    if (img.get(150, 50)[3] >= 0.01f) return false;
+    return true;
+}
+
+// after EffectCraft crates/render/src/tests.rs test track_matte_kinds_keep_and_invert
+static bool t_render_track_matte_kinds() {
+    std::vector<std::pair<MatteKind, bool>> kinds = {
+        {MatteKind::Alpha, true},
+        {MatteKind::AlphaInverse, false},
+        {MatteKind::Luma, true},
+        {MatteKind::LumaInverse, false}
+    };
+    for (const auto& item : kinds) {
+        MatteKind kind = item.first;
+        bool inside = item.second;
+        auto [p, cid, comp] = render_setup();
+        auto matte = make_solid(p, comp, {1.0f, 1.0f, 1.0f}, 50, 50);
+        matte.props.prop_mut("transform/position")->value = KeyframeModel::Value::Vec3(50.0, 50.0, 0.0);
+        matte.switches.video = false;
+        auto fill = make_solid(p, comp, {0.0f, 0.0f, 1.0f}, 200, 100);
+        fill.hasMatte = true;
+        fill.matteLayer = matte.id;
+        fill.matteKind = kind;
+        p.compositions[0].layers.push_back(matte);
+        p.compositions[0].layers.push_back(fill);
+        auto img = Render::render_frame(&p, cid, Tick::ZERO, 1.0);
+        float a_in = img.get(50, 50)[3], a_out = img.get(150, 50)[3];
+        if (inside) {
+            if (!(a_in > 0.99f && a_out < 0.01f)) return false;
+            if (img.get(50, 50)[2] <= 0.99f) return false;
+        } else {
+            if (!(a_in < 0.01f && a_out > 0.99f)) return false;
+            if (img.get(150, 50)[2] <= 0.99f) return false;
+        }
+    }
+    return true;
+}
+
+// =====================================================================
 // Registration
 // =====================================================================
 void registerAll() {
@@ -1389,6 +2109,42 @@ void registerAll() {
     add("icons::concave_glyphs_are_filled_as_convex_pieces",   t_icons_concave_glyphs_are_filled_as_convex_pieces);
     add("icons::keyframe_bounds_follow_each_half",             t_icons_keyframe_bounds_follow_each_half);
     add("icons::keyframes_are_drawn_without_a_dark_outline",   t_icons_keyframes_are_drawn_without_a_dark_outline);
+    // Color & Blend tests (after EffectCraft crates/color/src/blend.rs)
+    add("color::opaque_formulas",                               t_blend_opaque_formulas);
+    add("color::transparent_source_keeps_destination",          t_blend_transparent_source_keeps_destination);
+    add("color::source_over_transparent_destination",           t_blend_source_over_transparent_destination);
+    add("color::stencil",                                       t_blend_stencil);
+    add("color::hdr_modes",                                     t_blend_hdr_modes);
+    add("color::after_effects_32bpc_formulas",                  t_blend_ae_32bpc_formulas);
+    add("color::names_roundtrip",                               t_blend_names_roundtrip);
+    // Raster tests (after EffectCraft crates/raster/src/lib.rs)
+    add("raster::u8_levels_expand_to_the_quantised_pixel",     t_raster_u8_levels_expand);
+    add("raster::dither_keeps_exact_codes_and_averages_the_rest", t_raster_dither_exact_and_average);
+    add("raster::dithered_conversions_match_the_plain_ones_on_exact_codes", t_raster_dithered_conversions_match);
+    add("raster::rgba8_roundtrip",                              t_raster_rgba8_roundtrip);
+    add("raster::bilinear_at_centres_is_exact",                 t_raster_bilinear_centres);
+    add("raster::alpha_bounds_found",                           t_raster_alpha_bounds);
+    add("raster::noise_in_range",                               t_raster_noise_in_range);
+    add("raster::padded_bounds_hostile_pad_at_the_api",         t_raster_padded_bounds_hostile);
+    add("raster::padded_leaves_legit_pads_untouched",           t_raster_padded_legit);
+    // Warp tests (after EffectCraft crates/raster/src/warp.rs)
+    add("warp::identity_warp_copies",                           t_warp_identity_copies);
+    add("warp::translate_by_integer",                           t_warp_translate_by_integer);
+    add("warp::fast_path_matches_reference",                    t_warp_fast_matches_reference);
+    add("warp::clear_tiles_hold_only_transparent_taps",         t_warp_clear_tiles);
+    add("warp::changed_rect_covers_the_changed_pixels",         t_warp_changed_rect);
+    add("warp::quantize_while_blending_matches_quantizing_after", t_warp_quantize_matches);
+    add("warp::accumulate_matches_per_sample_images",           t_warp_accumulate);
+    add("warp::downscale_preserves_average",                    t_warp_downscale);
+    // Render tests (after EffectCraft crates/render/src/tests.rs)
+    add("render::solid_fills_comp",                             t_render_solid_fills_comp);
+    add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
+    add("render::opacity_and_blend_modes",                      t_render_opacity_and_blend_modes);
+    add("render::half_resolution",                              t_render_half_resolution);
+    add("render::mask_cuts_layer",                              t_render_mask_cuts_layer);
+    add("render::first_intersect_and_darken_keep_their_rectangle", t_render_first_intersect_darken);
+    add("render::track_matte_alpha",                            t_render_track_matte_alpha);
+    add("render::track_matte_kinds_keep_and_invert",            t_render_track_matte_kinds);
 }
 
 } // namespace SelfTest

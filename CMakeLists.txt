@@ -59,6 +59,8 @@ set(SOURCES
     src/time_.cpp
     src/keyframe.cpp
     src/props.cpp
+    src/raster.cpp
+    src/render.cpp
     src/icons.cpp
     src/selftest.cpp)
 if(WIN32)

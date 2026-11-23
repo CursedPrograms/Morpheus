@@ -21,6 +21,7 @@
 #endif
 #include "time_.h"
 #include "props.h"
+#include "raster.h"
 
 #include <cstdint>
 #include <string>
@@ -157,6 +158,7 @@ struct Switches {
     bool motionBlur      = false;
     bool adjustment      = false;
     bool threeD          = false;
+    bool guide           = false;
     bool environmentLayer = false;
     // Quality / sampling (stored as switches in AE / EffectCraft)
     Quality    quality   = Quality::Best;
@@ -220,6 +222,10 @@ struct Layer {
 
     // Solid colour (RGBA 0..1) for Solid layers.
     float solidR = 0.5f, solidG = 0.5f, solidB = 0.5f, solidA = 1.0f;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    Raster::BlendMode blendMode = Raster::BlendMode::Normal;
+    bool preserveTransparency = false;
 
     // Full property tree (transform, masks, effects)
     // after EffectCraft crates/project/src/props.rs
@@ -239,7 +245,7 @@ struct Layer {
     // Is the layer active at composition time t?
     // after EffectCraft crates/project/src/layer.rs Layer::is_active_at
     bool isActiveAt(Tick t) const {
-        return switches.video && t >= inPt && t < outPt;
+        return t >= inPt && t < outPt;
     }
 
     bool operator==(const Layer& o) const;
@@ -274,6 +280,7 @@ struct Guide {
 // ---- Composition -----------------------------------------------------
 // after EffectCraft crates/project/src/comp.rs Comp
 struct Composition {
+    ItemId       id;
     std::string  name;
     uint32_t     width         = 1920;
     uint32_t     height        = 1080;

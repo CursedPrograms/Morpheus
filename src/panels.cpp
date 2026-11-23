@@ -32,6 +32,15 @@
 #include "time_.h"
 #include "lang.h"
 #include "icons.h"
+#include "render.h"
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
+#include <SDL_opengl.h>
 
 #include <imgui.h>
 #include <imgui_internal.h>
@@ -371,8 +380,14 @@ static void drawCompositionViewer(Project::Project* proj) {
         }
     }
 
-    // Centered composition canvas frame (16:9 box)
-    const float aspect = 16.0f / 9.0f;
+    static GLuint s_compTexture = 0;
+
+    // Centered composition canvas frame (matches comp aspect ratio or 16:9)
+    float aspect = 16.0f / 9.0f;
+    if (proj && proj->activeComp >= 0 && (size_t)proj->activeComp < proj->compositions.size()) {
+        const auto& c = proj->compositions[(size_t)proj->activeComp];
+        if (c.width > 0 && c.height > 0) aspect = (float)c.width / (float)c.height;
+    }
     float cw = avail.x * 0.75f;
     float ch = cw / aspect;
     if (ch > canvasH * 0.8f) {
@@ -381,15 +396,39 @@ static void drawCompositionViewer(Project::Project* proj) {
     }
     const ImVec2 cMin{ p.x + (avail.x - cw) * 0.5f, p.y + (canvasH - ch) * 0.5f };
     const ImVec2 cMax{ cMin.x + cw, cMin.y + ch };
-    dl->AddRectFilled(cMin, cMax, IM_COL32(0x12, 0x12, 0x12, 255));
-    dl->AddRect(cMin, cMax, C_LINE, 1.0f);
 
-    // Centered comp name in canvas
-    const char* label = (proj && proj->activeComp >= 0)
-        ? proj->compositions[(size_t)proj->activeComp].name.c_str()
-        : L("No composition");
-    const ImVec2 ts = ImGui::CalcTextSize(label);
-    dl->AddText({cMin.x + (cw - ts.x) * 0.5f, cMin.y + (ch - ts.y) * 0.5f}, C_DIM, label);
+    bool has_rendered = false;
+    if (proj && proj->activeComp >= 0 && (size_t)proj->activeComp < proj->compositions.size()) {
+        const auto& comp = proj->compositions[(size_t)proj->activeComp];
+        if (!comp.layers.empty()) {
+            Raster::Image frame = Render::render_frame(proj, comp.id.v, Project::Tick::ZERO, 1.0);
+            if (!frame.is_empty()) {
+                std::vector<uint8_t> rgba = frame.to_rgba8();
+                if (s_compTexture == 0) {
+                    glGenTextures(1, &s_compTexture);
+                }
+                glBindTexture(GL_TEXTURE_2D, s_compTexture);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+                glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)frame.width, (GLsizei)frame.height, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
+                has_rendered = true;
+            }
+        }
+    }
+
+    if (has_rendered && s_compTexture != 0) {
+        dl->AddImage((ImTextureID)(intptr_t)s_compTexture, cMin, cMax);
+        dl->AddRect(cMin, cMax, C_LINE, 1.0f);
+    } else {
+        dl->AddRectFilled(cMin, cMax, IM_COL32(0x12, 0x12, 0x12, 255));
+        dl->AddRect(cMin, cMax, C_LINE, 1.0f);
+        // Centered comp name in canvas
+        const char* label = (proj && proj->activeComp >= 0)
+            ? proj->compositions[(size_t)proj->activeComp].name.c_str()
+            : L("No composition");
+        const ImVec2 ts = ImGui::CalcTextSize(label);
+        dl->AddText({cMin.x + (cw - ts.x) * 0.5f, cMin.y + (ch - ts.y) * 0.5f}, C_DIM, label);
+    }
 
     ImGui::Dummy({avail.x, canvasH});
     hLine(dl, p.x, p.x + avail.x, p.y + canvasH);

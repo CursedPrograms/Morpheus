@@ -40,6 +40,7 @@ ProjectData ProjectData::makeNew() {
     p.nextId = 1;
 
     Composition comp;
+    comp.id.v       = p.alloc();
     comp.name       = "Composition 1";
     comp.width      = 1920;
     comp.height     = 1080;
@@ -319,12 +320,14 @@ bool Layer::operator==(const Layer& o) const {
            inPt == o.inPt && outPt == o.outPt && startTime == o.startTime &&
            stretch == o.stretch && solidR == o.solidR && solidG == o.solidG &&
            solidB == o.solidB && solidA == o.solidA &&
+           width == o.width && height == o.height && blendMode == o.blendMode &&
+           preserveTransparency == o.preserveTransparency &&
            switches.video == o.switches.video && switches.audio == o.switches.audio &&
            switches.solo == o.switches.solo && switches.locked == o.switches.locked &&
            switches.shy == o.switches.shy && switches.collapse == o.switches.collapse &&
            switches.effects == o.switches.effects && switches.frameBlend == o.switches.frameBlend &&
            switches.motionBlur == o.switches.motionBlur && switches.adjustment == o.switches.adjustment &&
-           switches.threeD == o.switches.threeD &&
+           switches.threeD == o.switches.threeD && switches.guide == o.switches.guide &&
            props == o.props;
 }
 
@@ -378,7 +381,7 @@ std::string Composition::uniqueLayerName(const std::string& base) const {
 }
 
 bool Composition::operator==(const Composition& o) const {
-    return name == o.name && width == o.width && height == o.height &&
+    return id == o.id && name == o.name && width == o.width && height == o.height &&
            pixelAspect == o.pixelAspect && frameRate == o.frameRate &&
            duration == o.duration && displayStart == o.displayStart &&
            workAreaStart == o.workAreaStart && workAreaDur == o.workAreaDur &&
@@ -430,7 +433,7 @@ static std::string layerToJson(const Layer& l) {
     char sw[256];
     snprintf(sw, sizeof sw,
         "\"switches\":{\"video\":%s,\"audio\":%s,\"solo\":%s,\"locked\":%s,"
-        "\"shy\":%s,\"effects\":%s,\"motionBlur\":%s,\"adjustment\":%s,\"threeD\":%s},",
+        "\"shy\":%s,\"effects\":%s,\"motionBlur\":%s,\"adjustment\":%s,\"threeD\":%s,\"guide\":%s},",
         l.switches.video?"true":"false",
         l.switches.audio?"true":"false",
         l.switches.solo?"true":"false",
@@ -439,13 +442,18 @@ static std::string layerToJson(const Layer& l) {
         l.switches.effects?"true":"false",
         l.switches.motionBlur?"true":"false",
         l.switches.adjustment?"true":"false",
-        l.switches.threeD?"true":"false");
+        l.switches.threeD?"true":"false",
+        l.switches.guide?"true":"false");
     o += sw;
     // Solid colour
     char sc[128];
     snprintf(sc, sizeof sc, "\"solidRGBA\":[%g,%g,%g,%g],",
              l.solidR, l.solidG, l.solidB, l.solidA);
     o += sc;
+    if (l.width > 0) o += "\"width\":" + std::to_string(l.width) + ",";
+    if (l.height > 0) o += "\"height\":" + std::to_string(l.height) + ",";
+    o += "\"blendMode\":" + jsonStr(Raster::blend_mode_label(l.blendMode)) + ",";
+    if (l.preserveTransparency) o += "\"preserveTransparency\":true,";
     o += "\"props\":" + propGroupToJson(l.props);
     o += "}";
     return o;
@@ -453,6 +461,7 @@ static std::string layerToJson(const Layer& l) {
 
 static std::string compToJson(const Composition& c) {
     std::string o = "{";
+    if (c.id.v > 0) o += "\"id\":" + std::to_string(c.id.v) + ",";
     o += "\"name\":" + jsonStr(c.name) + ",";
     o += "\"width\":" + std::to_string(c.width) + ",";
     o += "\"height\":" + std::to_string(c.height) + ",";
@@ -605,6 +614,17 @@ struct Parser {
         if (endp == p) return false;
         p = endp;
         return true;
+    }
+
+    bool parseInt(int& out) {
+        int64_t v = 0;
+        if (!parseInt64(v)) return false;
+        out = (int)v;
+        return true;
+    }
+
+    bool parseU64(uint64_t& out) {
+        return parseUint64(out);
     }
 
     bool parseBool(bool& out) {
@@ -1116,6 +1136,7 @@ static bool parseLayer(Parser& jp, Layer& l) {
                 else if (k2=="motionBlur")  l.switches.motionBlur  = b;
                 else if (k2=="adjustment")  l.switches.adjustment  = b;
                 else if (k2=="threeD")      l.switches.threeD      = b;
+                else if (k2=="guide")       l.switches.guide       = b;
                 return true;
             });
         }
@@ -1130,6 +1151,15 @@ static bool parseLayer(Parser& jp, Layer& l) {
                 ++i; return true;
             });
         }
+        if (key == "width") { int v; if (!jp.parseInt(v)) return false; l.width = (uint32_t)v; return true; }
+        if (key == "height") { int v; if (!jp.parseInt(v)) return false; l.height = (uint32_t)v; return true; }
+        if (key == "blendMode") {
+            std::string s; if (!jp.parseString(s)) return false;
+            auto bm = Raster::blend_mode_from_name(s);
+            if (bm.has_value()) l.blendMode = *bm;
+            return true;
+        }
+        if (key == "preserveTransparency") return jp.parseBool(l.preserveTransparency);
         if (key == "props") {
             hasProps = true;
             return parsePropGroup(jp, l.props);
@@ -1151,6 +1181,7 @@ static bool parseLayer(Parser& jp, Layer& l) {
 // =====================================================================
 static bool parseComp(Parser& jp, Composition& c) {
     return jp.parseObject([&](const std::string& key) -> bool {
+        if (key == "id") { uint64_t v; if (!jp.parseU64(v)) return false; c.id.v = v; return true; }
         if (key == "name") return jp.parseString(c.name);
         if (key == "width") {
             double v; if (!jp.parseDouble(v)) return false;

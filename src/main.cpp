@@ -8,6 +8,9 @@
 #include "app.h"
 #include "splash.h"
 #include "selftest.h"
+#include "render.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb_image_write.h"
 
 #ifdef _WIN32
 #ifndef WIN32_LEAN_AND_MEAN
@@ -145,6 +148,45 @@ int main(int argc, char** argv) {
             SelfTest::registerAll();
             int failures = SelfTest::run();
             return (failures == 0) ? 0 : 1;
+        }
+    }
+
+    // --render project.morpheus out.png --frame N: offline frame render
+    for (int i = 1; i < argc; ++i) {
+        if (std::string(argv[i]) == "--render") {
+            std::string projFile;
+            std::string outFile = "out.png";
+            int64_t frameNum = 0;
+            if (i + 1 < argc && argv[i + 1][0] != '-') projFile = argv[++i];
+            if (i + 1 < argc && argv[i + 1][0] != '-') outFile = argv[++i];
+            for (int j = 1; j < argc; ++j) {
+                if (std::string(argv[j]) == "--frame" && j + 1 < argc) {
+                    frameNum = std::stoll(argv[j + 1]);
+                }
+            }
+            if (!projFile.empty()) {
+                Project::Project p;
+                if (!Project::load(p, projFile)) {
+                    printf("Failed to load project: %s\n", projFile.c_str());
+                    return 1;
+                }
+                if (p.compositions.empty()) {
+                    printf("Project has no compositions: %s\n", projFile.c_str());
+                    return 1;
+                }
+                const auto& comp = (p.activeComp >= 0 && (size_t)p.activeComp < p.compositions.size())
+                    ? p.compositions[(size_t)p.activeComp] : p.compositions[0];
+                Project::Tick t = comp.frameRate.tick_of(frameNum);
+                Raster::Image img = Render::render_frame(&p, comp.id.v, t, 1.0);
+                std::vector<uint8_t> rgba = img.to_rgba8();
+                if (stbi_write_png(outFile.c_str(), (int)img.width, (int)img.height, 4, rgba.data(), (int)img.width * 4)) {
+                    printf("Rendered frame %lld to %s (%ux%u)\n", (long long)frameNum, outFile.c_str(), img.width, img.height);
+                    return 0;
+                } else {
+                    printf("Failed to write image: %s\n", outFile.c_str());
+                    return 1;
+                }
+            }
         }
     }
 

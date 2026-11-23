@@ -225,6 +225,69 @@ void script(const std::string& name) {
             }
             std::remove(tmpPath.c_str());
         }
+    } else if (name == "render_frame") {
+        // Phase 3 test: create a project with multiple styled and composited layers,
+        // render frame 0 in the composition panel.
+        newProject();
+        SDL_Log("script render_frame: created project '%s'.", s_proj ? s_proj->name.c_str() : "(null)");
+        if (s_proj && !s_proj->compositions.empty()) {
+            auto& comp = s_proj->compositions[0];
+            comp.width = 1920;
+            comp.height = 1080;
+            comp.duration = Project::Tick::from_seconds_f64(5.0);
+
+            // Layer 1: Background dark blue solid
+            Project::Layer bg;
+            bg.id.v = s_proj->alloc();
+            bg.name = "Background";
+            bg.kind = Project::LayerKind::Solid;
+            bg.width = 1920;
+            bg.height = 1080;
+            bg.solidR = 0.08f; bg.solidG = 0.10f; bg.solidB = 0.16f; bg.solidA = 1.0f;
+            bg.outPt = comp.duration;
+            bg.xform.anchorX = 960; bg.xform.anchorY = 540;
+            bg.xform.posX = 960; bg.xform.posY = 540;
+            bg.initProps(&s_proj->nextId, 960, 540, 960, 540);
+
+            // Layer 2: Atelier blue accent rect with a mask
+            Project::Layer rect;
+            rect.id.v = s_proj->alloc();
+            rect.name = "Blue Solid";
+            rect.kind = Project::LayerKind::Solid;
+            rect.width = 800;
+            rect.height = 500;
+            rect.solidR = 0.0f; rect.solidG = 0.482f; rect.solidB = 0.718f; rect.solidA = 0.9f;
+            rect.outPt = comp.duration;
+            rect.xform.anchorX = 400; rect.xform.anchorY = 250;
+            rect.xform.posX = 960; rect.xform.posY = 540;
+            rect.initProps(&s_proj->nextId, 400, 250, 960, 540);
+
+            uint64_t next = s_proj->nextId;
+            Props::Ids ids(&next);
+            auto m = Props::Build::mask(ids, "Mask 1", KeyframeModel::ShapePath::rect({400.0, 250.0}, 600.0, 350.0), Props::MaskMode::Add, {255, 255, 0});
+            s_proj->nextId = next;
+            rect.props.sub_mut("masks")->children.push_back(Props::Node(m));
+
+            // Layer 3: Accent overlay in Add mode
+            Project::Layer glow;
+            glow.id.v = s_proj->alloc();
+            glow.name = "Glow Accent";
+            glow.kind = Project::LayerKind::Solid;
+            glow.width = 400;
+            glow.height = 400;
+            glow.solidR = 0.8f; glow.solidG = 0.4f; glow.solidB = 0.1f; glow.solidA = 0.7f;
+            glow.blendMode = Raster::BlendMode::Add;
+            glow.outPt = comp.duration;
+            glow.xform.anchorX = 200; glow.xform.anchorY = 200;
+            glow.xform.posX = 1100; glow.xform.posY = 480;
+            glow.initProps(&s_proj->nextId, 200, 200, 1100, 480);
+
+            comp.layers.push_back(glow);
+            comp.layers.push_back(rect);
+            comp.layers.push_back(bg);
+
+            SDL_Log("script render_frame: layers setup ok, 3 layers ready for composition rendering.");
+        }
     } else {
         SDL_Log("script '%s': unknown (skipping).", name.c_str());
     }
