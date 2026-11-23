@@ -54,6 +54,7 @@
 #include <unordered_set>
 #include <cmath>
 #include <limits>
+#include <optional>
 
 // Suppress min/max macro conflicts.
 #ifdef min
@@ -134,6 +135,8 @@ static double s_timelinePps = 0.0;
 static float s_timelineZoom = 0.0f;
 static float s_timelineScroll = 0.0f;
 static uint64_t s_selectedLayer = 0;
+static uint64_t s_selectedShapeLayer = 0;
+static uint64_t s_selectedShapeGroup = 0;
 static std::unordered_set<uint64_t> s_selectedLayers;
 static uint64_t s_selectionAnchor = 0;
 static bool s_graphEditor = false;
@@ -224,6 +227,8 @@ void invalidateFrameCache() {
 
 void prepareTimelineCapture(uint64_t layerId) {
     s_selectedLayer = layerId;
+    s_selectedShapeLayer = 0;
+    s_selectedShapeGroup = 0;
     s_selectedLayers.clear();
     s_selectedLayers.insert(layerId);
     s_selectionAnchor = layerId;
@@ -248,6 +253,16 @@ void prepareTimelineCapture(uint64_t layerId) {
     s_propertyRowHits.clear();
     s_keyMarqueeActive = false;
     invalidateFrameCache();
+}
+
+void prepareShapeCapture(uint64_t layerId, uint64_t contentsId,
+                         const std::vector<uint64_t>& groupIds) {
+    prepareTimelineCapture(layerId);
+    s_selectedShapeLayer = layerId;
+    s_selectedShapeGroup = groupIds.empty() ? 0 : groupIds.front();
+    s_openGroups.insert(contentsId);
+    for (uint64_t groupId : groupIds)
+        if (groupId != 0) s_openGroups.insert(groupId);
 }
 
 void prepareKeyframeCapture(uint64_t layerId, bool graphEditor, bool speedGraph,
@@ -989,6 +1004,66 @@ static void drawCompositionViewer(Project::Project* proj) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Fast Previews"));
 }
 
+// after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
+static bool appendShapeItem(Project::Project* project, Project::Layer& layer,
+                            const std::string& kind, uint64_t parentUid) {
+    if (layer.kind != Project::LayerKind::Shape) return false;
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return false;
+    Props::Ids ids(&project->nextId);
+    const std::optional<Props::Uid> added =
+        Props::Build::addShapeItem(ids, *contents, kind, parentUid);
+    if (!added) return false;
+    if (kind == "group") {
+        s_openGroups.insert(*added);
+        s_selectedShapeGroup = *added;
+    }
+    s_selectedShapeLayer = layer.id.v;
+    project->dirty = true;
+    invalidateFrameCache();
+    return true;
+}
+
+// after EffectCraft crates/ui-egui/src/panels/timeline.rs shape_add_popup
+struct PendingShapeItem {
+    uint64_t layer = 0;
+    uint64_t parent = 0;
+    std::string kind;
+};
+
+static void drawShapeAddMenu(Project::Project* project, Project::Layer& layer,
+                             Props::PropGroup& contents,
+                             std::optional<PendingShapeItem>& pending) {
+    if (!project || layer.kind != Project::LayerKind::Shape || contents.match_id != "contents") return;
+    const bool addButton = Icons::iconButton("##shape-add", Icons::Icon::ChevronRight, false, {18, 17});
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", L("Add a shape, fill, stroke or path"));
+    if (addButton) ImGui::OpenPopup("##shape-add-menu");
+    if (!ImGui::BeginPopup("##shape-add-menu")) return;
+
+    const struct { const char* kind; const char* label; bool separator; } items[] = {
+        {"group", "Group (empty)", false},
+        {"", "", true},
+        {"rect", "Rectangle", false},
+        {"ellipse", "Ellipse", false},
+        {"path", "Path", false},
+        {"", "", true},
+        {"fill", "Fill", false},
+        {"stroke", "Stroke", false},
+    };
+    for (const auto& item : items) {
+        if (item.separator) {
+            ImGui::Separator();
+        } else if (ImGui::MenuItem(item.label)) {
+            const uint64_t parentUid = s_selectedShapeLayer == layer.id.v
+                ? s_selectedShapeGroup : 0;
+            pending = PendingShapeItem{layer.id.v, parentUid, item.kind};
+            ImGui::CloseCurrentPopup();
+            break;
+        }
+    }
+    ImGui::EndPopup();
+}
+
 // after EffectCraft crates/ui-egui/src/panels/timeline.rs
 static void drawTimeline(Project::Project* proj) {
     if (!proj || proj->activeComp < 0) {
@@ -1010,15 +1085,32 @@ static void drawTimeline(Project::Project* proj) {
     };
     std::vector<Row> rows;
     std::function<void(size_t, Props::PropGroup&, int)> appendGroup;
+    std::function<void(size_t, Props::PropGroup&, int)> appendChildren;
     appendGroup = [&](size_t layerIndex, Props::PropGroup& group, int depth) {
         rows.push_back({Row::Kind::Group, layerIndex, &group, nullptr, depth});
         const bool open = group.name == "Transform" || s_openGroups.count(group.uid) != 0;
         if (!open) return;
+        appendChildren(layerIndex, group, depth + 1);
+    };
+    appendChildren = [&](size_t layerIndex, Props::PropGroup& group, int depth) {
         for (auto& node : group.children) {
             if (auto* property = node.as_prop_mut()) {
-                rows.push_back({Row::Kind::Property, layerIndex, nullptr, property, depth + 1});
+                if (property->ui.kind == Props::ParamUiKind::Hidden) continue;
+                if (group.match_id == "rect" &&
+                    (property->match_id == "topLeftRoundness" ||
+                     property->match_id == "topRightRoundness" ||
+                     property->match_id == "bottomRightRoundness" ||
+                     property->match_id == "bottomLeftRoundness")) {
+                    const Props::Property* perCorner = group.prop("perCorner");
+                    if (!perCorner || !perCorner->value_at(comp.layers[layerIndex].layerTime(s_currentTime)).as_bool())
+                        continue;
+                }
+                rows.push_back({Row::Kind::Property, layerIndex, nullptr, property, depth});
             } else if (auto* child = node.as_group_mut()) {
-                appendGroup(layerIndex, *child, depth + 1);
+                if (group.match_id == "group" && child->match_id == "contents")
+                    appendChildren(layerIndex, *child, depth);
+                else
+                    appendGroup(layerIndex, *child, depth);
             }
         }
     };
@@ -1133,6 +1225,7 @@ static void drawTimeline(Project::Project* proj) {
     ImGui::BeginChild("##tlayers", {leftSideW, layerAreaH}, false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + rulerH);
     bool resizeCursor = false;
+    std::optional<PendingShapeItem> pendingShapeItem;
     s_layerRowHits.clear();
     for (size_t ri = 0; ri < rows.size(); ++ri) {
         const Row& row = rows[ri];
@@ -1225,16 +1318,42 @@ static void drawTimeline(Project::Project* proj) {
             const float indent = 14.0f * (float)row.depth;
             if (row.kind == Row::Kind::Group) {
                 const bool open = row.group->name == "Transform" || s_openGroups.count(row.group->uid) != 0;
+                const Props::PropGroup* parent = layer.props.parent_of(row.group->uid);
+                const bool shapeItem = layer.kind == Project::LayerKind::Shape &&
+                    parent && parent->match_id == "contents";
+                const bool contents = layer.kind == Project::LayerKind::Shape &&
+                    row.group->match_id == "contents";
                 Icons::paintCentered(rowDl, {rp.x + indent + 10.0f, rp.y + ROW_H * 0.5f}, 9.0f,
                                      open ? Icons::Icon::ChevronDown : Icons::Icon::ChevronRight, C_DIM);
-                rowDl->AddText({rp.x + indent + 18.0f, rp.y + 2.0f}, C_DIM, row.group->name.c_str());
+                rowDl->AddText({rp.x + indent + 18.0f, rp.y + 2.0f},
+                               row.group->enabled ? C_DIM : C_FAINT, row.group->name.c_str());
                 ImGui::SetCursorScreenPos({rp.x + indent, rp.y});
-                ImGui::InvisibleButton("##group", {leftSideW - indent - 2.0f, ROW_H});
+                const float reserved = contents ? 26.0f : shapeItem ? 24.0f : 2.0f;
+                ImGui::InvisibleButton("##group", {leftSideW - indent - reserved, ROW_H});
                 if (ImGui::IsItemClicked()) {
                     if (row.group->name != "Transform") {
                         if (open) s_openGroups.erase(row.group->uid);
                         else s_openGroups.insert(row.group->uid);
                     }
+                    if (layer.kind == Project::LayerKind::Shape) {
+                        s_selectedShapeLayer = layer.id.v;
+                        s_selectedShapeGroup = row.group->match_id == "group" ? row.group->uid : 0;
+                    }
+                }
+                if (shapeItem) {
+                    ImGui::SetCursorScreenPos({rp.x + leftSideW - 21.0f, rp.y + 1.0f});
+                    if (Icons::iconButton("##shape-visible", Icons::Icon::Eye,
+                                          row.group->enabled, {18, 17})) {
+                        row.group->enabled = !row.group->enabled;
+                        proj->dirty = true;
+                        invalidateFrameCache();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s",
+                        row.group->enabled ? L("Disable") : L("Enable"));
+                }
+                if (contents) {
+                    ImGui::SetCursorScreenPos({rp.x + leftSideW - 43.0f, rp.y + 1.0f});
+                    drawShapeAddMenu(proj, layer, *row.group, pendingShapeItem);
                 }
             } else {
                 Props::Property& property = *row.property;
@@ -1292,24 +1411,129 @@ static void drawTimeline(Project::Project* proj) {
                     static_cast<float>(value.kind == KeyframeModel::ValueKind::Vec3 ? value.v3[2] : 0.0)
                 };
                 const size_t valueWidth = value.kind == KeyframeModel::ValueKind::Vec3 ? 112 :
-                    value.kind == KeyframeModel::ValueKind::Vec2 ? 82 : 62;
+                    value.kind == KeyframeModel::ValueKind::Vec2 ? 82 :
+                    value.kind == KeyframeModel::ValueKind::Color ? 48 :
+                    value.kind == KeyframeModel::ValueKind::Bool ? 48 :
+                    value.kind == KeyframeModel::ValueKind::Enum ? 110 :
+                    value.kind == KeyframeModel::ValueKind::Path ? 74 : 62;
                 ImGui::SetCursorScreenPos({rp.x + leftSideW - static_cast<float>(valueWidth) - 6.0f, rp.y + 1.0f});
                 ImGui::SetNextItemWidth(static_cast<float>(valueWidth));
                 bool changed = false;
+                KeyframeModel::Value edited = value;
                 if (value.kind == KeyframeModel::ValueKind::Scalar) {
                     changed = ImGui::DragFloat("##value", &numeric[0], 0.1f, 0.0f, 0.0f, "%.3g");
                 } else if (value.kind == KeyframeModel::ValueKind::Vec2) {
                     changed = ImGui::DragFloat2("##value", numeric, 0.1f, 0.0f, 0.0f, "%.3g");
                 } else if (value.kind == KeyframeModel::ValueKind::Vec3) {
                     changed = ImGui::DragFloat3("##value", numeric, 0.1f, 0.0f, 0.0f, "%.3g");
+                } else if (value.kind == KeyframeModel::ValueKind::Color) {
+                    float color[4] = {
+                        static_cast<float>(value.color[0]), static_cast<float>(value.color[1]),
+                        static_cast<float>(value.color[2]), static_cast<float>(value.color[3])
+                    };
+                    changed = ImGui::ColorEdit4("##value", color,
+                        ImGuiColorEditFlags_NoInputs | ImGuiColorEditFlags_AlphaBar);
+                    if (changed)
+                        edited = KeyframeModel::Value::Color(color[0], color[1], color[2], color[3]);
+                } else if (value.kind == KeyframeModel::ValueKind::Bool) {
+                    bool enabled = value.b;
+                    changed = ImGui::Checkbox("##value", &enabled);
+                    if (changed) edited = KeyframeModel::Value::Bool(enabled);
+                } else if (value.kind == KeyframeModel::ValueKind::Enum && !property.ui.options.empty()) {
+                    const uint32_t selected = value.e;
+                    const char* preview = selected < property.ui.options.size()
+                        ? property.ui.options[selected].c_str() : "";
+                    if (ImGui::BeginCombo("##value", preview)) {
+                        for (size_t option = 0; option < property.ui.options.size(); ++option) {
+                            const bool isSelected = selected == option;
+                            if (ImGui::Selectable(property.ui.options[option].c_str(), isSelected)) {
+                                edited = KeyframeModel::Value::Enum(static_cast<uint32_t>(option));
+                                changed = true;
+                            }
+                            if (isSelected) ImGui::SetItemDefaultFocus();
+                        }
+                        ImGui::EndCombo();
+                    }
+                } else if (value.kind == KeyframeModel::ValueKind::Path) {
+                    if (ImGui::Button("Shape...")) ImGui::OpenPopup("##path-editor");
+                    if (ImGui::BeginPopup("##path-editor")) {
+                        KeyframeModel::ShapePath path = value.path;
+                        path.in_tangents.resize(path.vertices.size(), {0.0, 0.0});
+                        path.out_tangents.resize(path.vertices.size(), {0.0, 0.0});
+                        bool pathChanged = ImGui::Checkbox("Closed", &path.closed);
+                        ImGui::Separator();
+                        for (size_t vertex = 0; vertex < path.vertices.size(); ++vertex) {
+                            ImGui::PushID(static_cast<int>(vertex));
+                            float point[2] = {
+                                static_cast<float>(path.vertices[vertex][0]),
+                                static_cast<float>(path.vertices[vertex][1])
+                            };
+                            ImGui::Text("%zu", vertex + 1);
+                            ImGui::SameLine();
+                            if (ImGui::DragFloat2("##vertex", point, 0.1f, 0.0f, 0.0f, "%.3g")) {
+                                path.vertices[vertex] = {point[0], point[1]};
+                                pathChanged = true;
+                            }
+                            float inTangent[2] = {
+                                static_cast<float>(path.in_tangents[vertex][0]),
+                                static_cast<float>(path.in_tangents[vertex][1])
+                            };
+                            ImGui::Text("In");
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(116.0f);
+                            if (ImGui::DragFloat2("##in-tangent", inTangent, 0.1f, 0.0f, 0.0f, "%.3g")) {
+                                path.in_tangents[vertex] = {inTangent[0], inTangent[1]};
+                                pathChanged = true;
+                            }
+                            float outTangent[2] = {
+                                static_cast<float>(path.out_tangents[vertex][0]),
+                                static_cast<float>(path.out_tangents[vertex][1])
+                            };
+                            ImGui::Text("Out");
+                            ImGui::SameLine();
+                            ImGui::SetNextItemWidth(116.0f);
+                            if (ImGui::DragFloat2("##out-tangent", outTangent, 0.1f, 0.0f, 0.0f, "%.3g")) {
+                                path.out_tangents[vertex] = {outTangent[0], outTangent[1]};
+                                pathChanged = true;
+                            }
+                            ImGui::PopID();
+                        }
+                        if (ImGui::Button("Add Vertex")) {
+                            const auto point = path.vertices.empty()
+                                ? std::array<double, 2>{0.0, 0.0}
+                                : std::array<double, 2>{path.vertices.back()[0] + 20.0,
+                                                        path.vertices.back()[1]};
+                            path.vertices.push_back(point);
+                            path.in_tangents.resize(path.vertices.size(), {0.0, 0.0});
+                            path.out_tangents.resize(path.vertices.size(), {0.0, 0.0});
+                            pathChanged = true;
+                        }
+                        if (!path.vertices.empty()) {
+                            ImGui::SameLine();
+                            if (ImGui::Button("Remove Vertex")) {
+                                path.vertices.pop_back();
+                                if (path.in_tangents.size() > path.vertices.size())
+                                    path.in_tangents.resize(path.vertices.size());
+                                if (path.out_tangents.size() > path.vertices.size())
+                                    path.out_tangents.resize(path.vertices.size());
+                                pathChanged = true;
+                            }
+                        }
+                        if (pathChanged) {
+                            edited = KeyframeModel::Value::Path(path);
+                            changed = true;
+                        }
+                        ImGui::EndPopup();
+                    }
                 }
                 if (changed) {
                     if (value.kind == KeyframeModel::ValueKind::Scalar)
-                        property.set_value_at(layerTime, KeyframeModel::Value::Scalar(numeric[0]));
+                        edited = KeyframeModel::Value::Scalar(numeric[0]);
                     else if (value.kind == KeyframeModel::ValueKind::Vec2)
-                        property.set_value_at(layerTime, KeyframeModel::Value::Vec2(numeric[0], numeric[1]));
-                    else
-                        property.set_value_at(layerTime, KeyframeModel::Value::Vec3(numeric[0], numeric[1], numeric[2]));
+                        edited = KeyframeModel::Value::Vec2(numeric[0], numeric[1]);
+                    else if (value.kind == KeyframeModel::ValueKind::Vec3)
+                        edited = KeyframeModel::Value::Vec3(numeric[0], numeric[1], numeric[2]);
+                    property.set_value_at(layerTime, edited);
                     if (!property.is_animated()) layer.syncPropsToTransform();
                     proj->dirty = true;
                     invalidateFrameCache();
@@ -1644,6 +1868,14 @@ static void drawTimeline(Project::Project* proj) {
     }
     }
 
+    if (pendingShapeItem && proj) {
+        const auto target = std::find_if(comp.layers.begin(), comp.layers.end(), [&](const Project::Layer& layer) {
+            return layer.id.v == pendingShapeItem->layer;
+        });
+        if (target != comp.layers.end())
+            appendShapeItem(proj, *target, pendingShapeItem->kind, pendingShapeItem->parent);
+    }
+
     if (s_keyMarqueeActive && !s_graphEditor) {
         const ImVec2 mouse = ImGui::GetIO().MousePos;
         const ImVec2 min{std::min(s_keyMarqueeStart.x, mouse.x),
@@ -1791,6 +2023,37 @@ static void drawTimeline(Project::Project* proj) {
                           duration, s_currentTime.seconds(), barAreaW * 0.5);
     }
     Icons::paintCentered(dl, {bp0.x + avW - 14.0f, bp0.y + botBarH * 0.5f}, 14.0f, Icons::Icon::MountainLarge, C_DIM);
+}
+
+// after EffectCraft crates/engine/src/cmd/layer.rs new_shape
+uint64_t createShapeLayer(Project::ProjectData* project) {
+    if (!project || project->activeComp < 0 ||
+        static_cast<size_t>(project->activeComp) >= project->compositions.size()) return 0;
+    Project::Composition& comp = project->compositions[static_cast<size_t>(project->activeComp)];
+    Project::Layer layer;
+    layer.id.v = project->alloc();
+    layer.name = comp.uniqueLayerName("Shape Layer");
+    layer.kind = Project::LayerKind::Shape;
+    layer.inPt = Project::Tick::ZERO;
+    layer.outPt = comp.duration;
+    layer.startTime = Project::Tick::ZERO;
+    layer.initProps(&project->nextId, 0.0, 0.0,
+                    static_cast<double>(comp.width) * 0.5,
+                    static_cast<double>(comp.height) * 0.5);
+    const uint64_t layerId = layer.id.v;
+    const Props::PropGroup* contents = layer.props.group("contents");
+    if (contents) s_openGroups.insert(contents->uid);
+    comp.layers.push_back(std::move(layer));
+    s_selectedLayer = layerId;
+    s_selectedLayers.clear();
+    s_selectedLayers.insert(layerId);
+    s_selectionAnchor = layerId;
+    s_openLayers.insert(layerId);
+    s_selectedShapeLayer = layerId;
+    s_selectedShapeGroup = 0;
+    project->dirty = true;
+    invalidateFrameCache();
+    return layerId;
 }
 
 // after EffectCraft crates/ui-egui/src/panels/live_preview.rs
@@ -2203,7 +2466,10 @@ void draw(Project::Project* proj, const Actions& actions) {
         }
         if (ImGui::BeginMenu(L("Layer"))) {
             ImGui::MenuItem(L("New Solid..."),          "Ctrl+Y");
-            ImGui::MenuItem(L("New Shape Layer"));
+            const bool canCreateLayer = proj && proj->activeComp >= 0 &&
+                static_cast<size_t>(proj->activeComp) < proj->compositions.size();
+            if (ImGui::MenuItem(L("New Shape Layer"), nullptr, false, canCreateLayer))
+                createShapeLayer(proj);
             ImGui::MenuItem(L("New Text Layer"),        "Ctrl+Alt+T");
             ImGui::MenuItem(L("New Null Object"),       "Ctrl+Alt+Shift+Y");
             ImGui::MenuItem(L("New Camera..."),         "Ctrl+Alt+Shift+C");

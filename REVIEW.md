@@ -45,7 +45,9 @@ None.
 
 - **Phase 6 Shape and Text Layers (`crates/path`, `crates/text`)**:
   - Started the shape-layer property model: shape layers now have the EffectCraft `Contents` root, nested groups and 2D transforms, and rectangle, ellipse, path and fill builders. Added a project JSON round-trip test; the Release build and all 105/105 self-tests pass.
-  - Not yet rendered or exposed in the UI. Remaining work includes path operators/strokes, shape rendering and editing, TextDoc storage/layout/rendering, and Text/Shape capture hooks. EffectCraft text layout uses HarfRust shaping and Unicode bidi; port those semantics before declaring text-layer parity.
+  - Shape rendering was committed as `41c0e46`: rectangle, ellipse and path geometry with fill/stroke, nested group transforms and opacity. The Release build and all 109/109 self-tests pass.
+  - Shape editing UI now supports creating a Shape Layer from Layer ▸ New Shape Layer, the foldable Contents tree in the Timeline, adding groups/rectangles/ellipses/paths/fills/strokes to layer or group Contents, enabling/disabling shape items, and editing scalar/vector, color, boolean, enum and path-vertex values. `--script shape_editing --capture ...` exercises and captures the tree and property rows. Added item-builder/insertion tests; Release build and all 111/111 self-tests pass, with capture inspected.
+  - Still open: the path operators (Trim Paths, Repeater, Round Corners, Offset Paths, Pucker & Bloat, Twist, Wiggle, Zig Zag, Merge Paths), gradient fills/strokes and surface-color items; Composition-panel shape editing; TextDoc storage/layout/rendering and the text capture hook. EffectCraft text layout uses HarfRust shaping and Unicode bidi; port those semantics before declaring text-layer parity.
 
 ## Kiro asks
 

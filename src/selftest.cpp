@@ -480,6 +480,59 @@ static bool t_shape_contents_roundtrip() {
         color && color->value == KeyframeModel::Value::Color(0.1, 0.2, 0.3, 0.8);
 }
 
+// after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
+static bool t_shape_item_builders() {
+    Proj project = Proj::makeNew();
+    Props::Ids ids(&project.nextId);
+    const std::pair<const char*, const char*> supported[] = {
+        {"group", "group"}, {"rect", "rect"}, {"ellipse", "ellipse"},
+        {"path", "path"}, {"fill", "fill"}, {"stroke", "stroke"}
+    };
+    for (const auto& [kind, matchId] : supported) {
+        std::optional<Props::PropGroup> item = Props::Build::shapeItem(ids, kind);
+        if (!item || item->match_id != matchId || item->uid == 0) return false;
+        if (kind == std::string("group")) {
+            const Props::PropGroup* contents = item->group("contents");
+            if (!contents || !contents->children.empty()) return false;
+        } else if (kind == std::string("rect")) {
+            const Props::Property* size = item->prop("size");
+            if (!size || size->value != KeyframeModel::Value::Vec2(200.0, 200.0)) return false;
+        } else if (kind == std::string("path")) {
+            const Props::Property* path = item->prop("path");
+            if (!path || !path->value.path.vertices.empty())
+                return false;
+        } else if (kind == std::string("fill") || kind == std::string("stroke")) {
+            const Props::Property* color = item->prop("color");
+            const KeyframeModel::Value expected = kind == std::string("fill")
+                ? KeyframeModel::Value::Color(1.0, 0.0, 0.0, 1.0)
+                : KeyframeModel::Value::Color(1.0, 1.0, 1.0, 1.0);
+            if (!color || color->value != expected)
+                return false;
+        }
+    }
+    return !Props::Build::shapeItem(ids, "trim").has_value();
+}
+
+// after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
+static bool t_shape_add_to_contents() {
+    Proj project = Proj::makeNew();
+    Props::Ids ids(&project.nextId);
+    Props::PropGroup contents = ids.group("contents", "Contents");
+    const std::optional<Props::Uid> groupId =
+        Props::Build::addShapeItem(ids, contents, "group");
+    if (!groupId || contents.children.size() != 1) return false;
+    const std::optional<Props::Uid> rectId =
+        Props::Build::addShapeItem(ids, contents, "rect", *groupId);
+    const Props::PropGroup* group = contents.find_group(*groupId);
+    const Props::PropGroup* inner = group ? group->group("contents") : nullptr;
+    if (!rectId || !inner || inner->children.size() != 1 ||
+        inner->children[0].match_id() != "rect") return false;
+    const uint64_t nextId = project.nextId;
+    return !Props::Build::addShapeItem(ids, contents, "trim", *groupId).has_value() &&
+        !Props::Build::addShapeItem(ids, contents, "fill", 999999).has_value() &&
+        project.nextId == nextId;
+}
+
 // after EffectCraft crates/project/src/tests.rs switches roundtrip
 static bool t_switches_roundtrip() {
     Proj p = Proj::makeNew();
@@ -2469,6 +2522,8 @@ void registerAll() {
     add("project::comp_resolution_saved",                          t_comp_resolution_saved);
     add("project::all_layer_kinds_roundtrip",                      t_layer_kinds_roundtrip);
     add("shape::contents_and_primitive_properties_roundtrip",       t_shape_contents_roundtrip);
+    add("shape::add_item_builders",                                 t_shape_item_builders);
+    add("shape::add_item_to_contents",                              t_shape_add_to_contents);
     add("project::switches_roundtrip",                             t_switches_roundtrip);
     add("project::transform_roundtrip",                            t_transform_roundtrip);
     add("project::paths_resolve",                                  t_project_paths_resolve);

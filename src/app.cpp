@@ -211,6 +211,47 @@ void script(const std::string& name) {
             Panels::prepareTimelineCapture(comp.layers[1].id.v);
             SDL_Log("script timeline: rendered 3 timeline layers with editable timing.");
         }
+    } else if (name == "shape_editing") {
+        newProject();
+        if (s_proj && !s_proj->compositions.empty()) {
+            auto& comp = s_proj->compositions[0];
+            const uint64_t shapeLayerId = Panels::createShapeLayer(s_proj);
+            if (shapeLayerId == 0) return;
+            Project::Layer& layer = comp.layers.back();
+
+            Props::Ids ids(&s_proj->nextId);
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::PropGroup rectangle = Props::Build::shapeRect(ids, {360.0, 180.0}, {-120.0, 0.0}, 18.0);
+                Props::PropGroup fill = Props::Build::shapeFill(ids, {0.0, 0.48, 0.72, 1.0});
+                const uint64_t rectanglePathId = rectangle.uid;
+                const uint64_t fillId = fill.uid;
+                std::vector<Props::PropGroup> rectangleItems;
+                rectangleItems.push_back(std::move(rectangle));
+                rectangleItems.push_back(std::move(fill));
+                Props::PropGroup roundedRectangle =
+                    Props::Build::shapeGroup(ids, "Rounded Rectangle", std::move(rectangleItems));
+                const uint64_t roundedRectangleId = roundedRectangle.uid;
+                contents->children.emplace_back(Props::Node(std::move(roundedRectangle)));
+
+                std::vector<Props::PropGroup> ellipseItems;
+                ellipseItems.push_back(Props::Build::shapeEllipse(ids, {140.0, 140.0}, {180.0, 0.0}));
+                ellipseItems.push_back(Props::Build::shapeStroke(ids, {1.0, 0.72, 0.18, 1.0}, 8.0));
+                contents->children.emplace_back(Props::Node(
+                    Props::Build::shapeGroup(ids, "Ellipse", std::move(ellipseItems))));
+
+                std::vector<Props::PropGroup> pathItems;
+                pathItems.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+                    {{-60.0, 120.0}, {60.0, 120.0}, {0.0, 240.0}}, true)));
+                pathItems.push_back(Props::Build::shapeFill(ids, {0.72, 0.24, 0.36, 1.0}));
+                contents->children.emplace_back(Props::Node(
+                    Props::Build::shapeGroup(ids, "Path", std::move(pathItems))));
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    {roundedRectangleId, rectanglePathId, fillId});
+                SDL_Log("script shape_editing: created editable rectangle, ellipse, path and paint groups.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

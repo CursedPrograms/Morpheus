@@ -734,6 +734,41 @@ PropGroup shapeStroke(Ids& ids, std::array<double, 4> color, double width) {
     return group;
 }
 
+// after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
+std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
+    if (kind == "group")
+        return shapeGroup(ids, "Group 1", {});
+    if (kind == "rect")
+        return shapeRect(ids, {200.0, 200.0}, {0.0, 0.0}, 0.0);
+    if (kind == "ellipse")
+        return shapeEllipse(ids, {200.0, 200.0}, {0.0, 0.0});
+    if (kind == "path")
+        return shapePath(ids, KeyframeModel::ShapePath{});
+    if (kind == "fill")
+        return shapeFill(ids, {1.0, 0.0, 0.0, 1.0});
+    if (kind == "stroke")
+        return shapeStroke(ids, {1.0, 1.0, 1.0, 1.0}, 2.0);
+    return std::nullopt;
+}
+
+// Insert a new item in the layer Contents or a shape group's inner Contents.
+std::optional<Uid> addShapeItem(Ids& ids, PropGroup& contents, const std::string& kind,
+                                Uid parentGroup) {
+    if (contents.match_id != "contents") return std::nullopt;
+    PropGroup* destination = &contents;
+    if (parentGroup != 0) {
+        PropGroup* parent = contents.find_group_mut(parentGroup);
+        if (!parent || parent->match_id != "group") return std::nullopt;
+        destination = parent->group_mut("contents");
+        if (!destination) return std::nullopt;
+    }
+    std::optional<PropGroup> item = shapeItem(ids, kind);
+    if (!item) return std::nullopt;
+    const Uid uid = item->uid;
+    destination->children.emplace_back(std::move(*item));
+    return uid;
+}
+
 PropGroup mask(Ids& ids, const std::string& name, ShapePath path, MaskMode mode, std::array<uint8_t, 3> color) {
     PropGroup g = ids.group("mask", name);
     g.kind.tag = GroupKindTag::Mask;

@@ -355,6 +355,9 @@ PropGroup shapeStrokeTaper(Ids& ids);
 PropGroup shapeStrokeWave(Ids& ids);
 PropGroup path_options(Ids& ids);
 PropGroup more_options(Ids& ids);
+std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind);
+std::optional<Uid> addShapeItem(Ids& ids, PropGroup& contents, const std::string& kind,
+                                Uid parentGroup = 0);
 
 } // namespace Build
 

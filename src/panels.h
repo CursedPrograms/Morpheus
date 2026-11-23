@@ -11,6 +11,7 @@
 #include <functional>
 #include <cstdint>
 #include <cstddef>
+#include <vector>
 
 // Forward declaration for the project model.
 namespace Project { struct ProjectData; }
@@ -36,8 +37,15 @@ void draw(Project::ProjectData* proj, const Actions& actions);
 // Invalidate cached frames after replacing or editing a project.
 void invalidateFrameCache();
 
+// Create, select and expand a Shape Layer in the active composition.
+uint64_t createShapeLayer(Project::ProjectData* project);
+
 // Select and expand a layer for scripted Timeline captures.
 void prepareTimelineCapture(uint64_t layerId);
+
+// Select and expand a shape layer's Contents tree for scripted captures.
+void prepareShapeCapture(uint64_t layerId, uint64_t contentsId,
+                         const std::vector<uint64_t>& groupIds = {});
 
 // Select and expand a layer for scripted keyframe or graph-editor captures.
 void prepareKeyframeCapture(uint64_t layerId, bool graphEditor, bool speedGraph = false,
