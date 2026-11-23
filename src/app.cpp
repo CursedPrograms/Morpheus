@@ -376,6 +376,28 @@ void script(const std::string& name) {
                 SDL_Log("script shape_pucker: applied Pucker & Bloat to the Shape Layer Contents.");
             }
         }
+    } else if (name == "shape_offset") {
+        script("shape_editing");
+        if (s_proj && !s_proj->compositions.empty() &&
+            !s_proj->compositions[0].layers.empty()) {
+            Project::Layer& layer = s_proj->compositions[0].layers.back();
+            Props::PropGroup* contents = layer.props.group_mut("contents");
+            if (contents) {
+                Props::Ids ids(&s_proj->nextId);
+                const auto offsetId =
+                    Props::Build::addShapeItem(ids, *contents, "offset");
+                Props::PropGroup* offset =
+                    offsetId ? contents->find_group_mut(*offsetId) : nullptr;
+                if (Props::Property* amount = offset ? offset->prop_mut("amount") : nullptr)
+                    amount->value = KeyframeModel::Value::Scalar(18.0);
+                if (Props::Property* copies = offset ? offset->prop_mut("copies") : nullptr)
+                    copies->value = KeyframeModel::Value::Scalar(2.0);
+                s_proj->dirty = true;
+                Panels::prepareShapeCapture(layer.id.v, contents->uid,
+                    offset ? std::vector<uint64_t>{offset->uid} : std::vector<uint64_t>{});
+                SDL_Log("script shape_offset: offset the Shape Layer Contents.");
+            }
+        }
     } else if (name == "keyframes" || name == "graph_editor" || name == "speed_graph") {
         script("timeline");
         if (s_proj && !s_proj->compositions.empty()) {

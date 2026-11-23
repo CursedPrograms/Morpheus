@@ -548,6 +548,17 @@ static bool t_shape_item_builders() {
             if (!amount || amount->value.as_f64() != 0.0 ||
                 amount->ui.min != -100.0 || amount->ui.max != 100.0)
                 return false;
+        } else if (kind == std::string("offset")) {
+            const Props::Property* amount = item->prop("amount");
+            const Props::Property* join = item->prop("join");
+            const Props::Property* copies = item->prop("copies");
+            const Props::Property* copyOffset = item->prop("copyOffset");
+            if (!amount || amount->value.as_f64() != 10.0 || !join ||
+                join->ui.options != std::vector<std::string>{
+                    "Miter Join", "Round Join", "Bevel Join"} ||
+                !copies || copies->value.as_f64() != 1.0 ||
+                !copyOffset || copyOffset->value.as_f64() != 0.0)
+                return false;
         }
     }
     return !Props::Build::shapeItem(ids, "unknown").has_value();
@@ -2507,6 +2518,40 @@ static Raster::Image renderShapePucker(double amount, bool includeOperator = tru
     return Render::render_frame(&project, compId, Tick::ZERO, 1.0);
 }
 
+// Build a centered shape scene for the Offset Paths render tests.
+static Raster::Image renderShapeOffset(double amount, uint32_t join = 0,
+                                      double copies = 1.0, double copyOffset = 0.0,
+                                      bool ellipse = false, bool open = false,
+                                      bool reverse = false) {
+    auto [project, compId, comp] = render_setup();
+    project.compositions[0].width = 300;
+    project.compositions[0].height = 300;
+    comp.width = 300;
+    comp.height = 300;
+    Layer layer = make_shape_layer(project, comp);
+    Props::Ids ids(&project.nextId);
+    std::vector<Props::PropGroup> items;
+    if (ellipse) {
+        items.push_back(Props::Build::shapeEllipse(ids, {100.0, 100.0}, {0.0, 0.0}));
+    } else if (open) {
+        items.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+            {{-50.0, 0.0}, {50.0, 0.0}}, false)));
+    } else if (reverse) {
+        items.push_back(Props::Build::shapePath(ids, KeyframeModel::ShapePath::polygon(
+            {{-50.0, 50.0}, {50.0, 50.0}, {50.0, -50.0}, {-50.0, -50.0}}, true)));
+    } else {
+        items.push_back(Props::Build::shapeRect(ids, {100.0, 100.0}, {0.0, 0.0}, 0.0));
+    }
+    items.push_back(Props::Build::shapeFill(ids, {1.0, 1.0, 1.0, 1.0}));
+    items.push_back(Props::Build::shapeOffset(ids, amount, join, copies, copyOffset));
+    Props::PropGroup* contents = layer.props.group_mut("contents");
+    if (!contents) return {};
+    contents->children.emplace_back(Props::Node(
+        Props::Build::shapeGroup(ids, "Offset Paths", std::move(items))));
+    project.compositions[0].layers.push_back(std::move(layer));
+    return Render::render_frame(&project, compId, Tick::ZERO, 1.0);
+}
+
 // after EffectCraft crates/path/src/ops/tests.rs round_corners_square
 static bool t_render_shape_round_corners_square() {
     auto [project, compId, comp] = render_setup();
@@ -2748,6 +2793,57 @@ static bool t_render_shape_pucker_moves_vertices_outward() {
     const Raster::Image puckered = renderShapePucker(-50.0);
     const double area = shapeAlphaArea(puckered);
     return area > 0.0 && area < 22500.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs offset_grows_square_with_miter
+static bool t_render_shape_offset_square_joins() {
+    const Raster::Image miter = renderShapeOffset(10.0);
+    if (std::abs(shapeAlphaArea(miter) - 14400.0) > 80.0 ||
+        miter.get(95, 150)[3] < 0.5f || miter.get(85, 150)[3] > 0.01f)
+        return false;
+    const Raster::Image round = renderShapeOffset(10.0, 1);
+    const Raster::Image bevel = renderShapeOffset(10.0, 2);
+    const double roundArea = shapeAlphaArea(round);
+    const double bevelArea = shapeAlphaArea(bevel);
+    return std::abs(roundArea - (10000.0 + 4000.0 + 3.14159265358979323846 * 100.0)) < 100.0 &&
+        std::abs(bevelArea - 14200.0) < 80.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs offset_negative_shrinks
+static bool t_render_shape_offset_negative_shrinks() {
+    const double area = shapeAlphaArea(renderShapeOffset(-10.0));
+    const double vanished = shapeAlphaArea(renderShapeOffset(-60.0));
+    if (std::abs(area - 6400.0) >= 80.0 || vanished >= 1.0)
+        std::printf("offset areas: %f %f\n", area, vanished);
+    return std::abs(area - 6400.0) < 80.0 && vanished < 1.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs offset_circle_is_a_circle
+static bool t_render_shape_offset_circle() {
+    const double grown = shapeAlphaArea(renderShapeOffset(10.0, 1, 1.0, 0.0, true));
+    const double inset = shapeAlphaArea(renderShapeOffset(-20.0, 1, 1.0, 0.0, true));
+    return std::abs(grown - 3.14159265358979323846 * 3600.0) < 100.0 &&
+        std::abs(inset - 3.14159265358979323846 * 900.0) < 80.0;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs offset_is_independent_of_orientation
+static bool t_render_shape_offset_orientation_and_copies() {
+    const Raster::Image forward = renderShapeOffset(5.0);
+    const Raster::Image reversed = renderShapeOffset(5.0, 0, 1.0, 0.0, false, false, true);
+    if (forward.data.size() != reversed.data.size()) return false;
+    for (size_t i = 0; i < forward.data.size(); ++i)
+        if (std::abs(forward.data[i][3] - reversed.data[i][3]) > 1e-6f)
+            return false;
+    const Raster::Image copies = renderShapeOffset(10.0, 0, 3.0);
+    const Raster::Image offsetCopy = renderShapeOffset(10.0, 0, 1.0, 1.0);
+    return copies.get(75, 150)[3] > 0.5f && copies.get(65, 150)[3] < 0.01f &&
+        offsetCopy.get(85, 150)[3] > 0.5f && offsetCopy.get(75, 150)[3] < 0.01f;
+}
+
+// after EffectCraft crates/path/src/ops/tests.rs offset_open_path_outlines
+static bool t_render_shape_offset_open_path() {
+    return std::abs(shapeAlphaArea(renderShapeOffset(5.0, 0, 1.0, 0.0, false, true)) -
+                    1000.0) < 40.0;
 }
 
 // after EffectCraft crates/render/src/tests.rs test solid_fills_comp
@@ -3116,6 +3212,11 @@ void registerAll() {
     add("path::zigzag_smooth_uses_curves",                             t_render_shape_zigzag_smooth);
     add("path::bloat_moves_vertices_inwards_and_bulges",                t_render_shape_bloat_moves_vertices_inward);
     add("path::pucker_moves_vertices_outwards",                         t_render_shape_pucker_moves_vertices_outward);
+    add("path::offset_grows_square_with_joins",                         t_render_shape_offset_square_joins);
+    add("path::offset_negative_shrinks",                               t_render_shape_offset_negative_shrinks);
+    add("path::offset_circle_is_a_circle",                             t_render_shape_offset_circle);
+    add("path::offset_orientation_and_copies",                         t_render_shape_offset_orientation_and_copies);
+    add("path::offset_open_path_outlines",                             t_render_shape_offset_open_path);
     add("render::solid_fills_comp",                             t_render_solid_fills_comp);
     add("render::position_keyframes_move_layer",                t_render_position_keyframes_move_layer);
     add("project::layer_time_maps_keyframes",                    t_project_layer_time_maps_keyframes);

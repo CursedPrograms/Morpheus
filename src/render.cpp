@@ -945,6 +945,258 @@ static void zigzagShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<si
     }
 }
 
+struct OffsetBoundary {
+    std::vector<Raster::Vec2> points;
+    std::vector<size_t> corners;
+};
+
+static Raster::Vec2 offsetLineIntersection(const Raster::Vec2& a, const Raster::Vec2& da,
+                                          const Raster::Vec2& b, const Raster::Vec2& db) {
+    const double denominator = da.cross(db);
+    if (std::abs(denominator) <= 1e-12) return (a + b) * 0.5;
+    return a + da * ((b - a).cross(db) / denominator);
+}
+
+static void appendOffsetJoin(OffsetBoundary& boundary, const Raster::Vec2& point,
+                             const Raster::Vec2& previous, const Raster::Vec2& next,
+                             const Raster::Vec2& previousDirection,
+                             const Raster::Vec2& nextDirection,
+                             double radius, bool outer, uint32_t join, double miterLimit) {
+    const Raster::Vec2 first = point + previous;
+    const Raster::Vec2 second = point + next;
+    const Raster::Vec2 intersection = offsetLineIntersection(
+        first, previousDirection, second, nextDirection);
+    const auto append = [&](const Raster::Vec2& value, bool corner) {
+        if (!boundary.points.empty() &&
+            (boundary.points.back() - value).length() <= 1e-9) {
+            if (corner) boundary.corners.push_back(boundary.points.size() - 1);
+            return;
+        }
+        boundary.points.push_back(value);
+        if (corner) boundary.corners.push_back(boundary.points.size() - 1);
+    };
+    if (!outer) {
+        append(intersection, true);
+    } else if (join == 1) {
+        const double startAngle = std::atan2(previous.y, previous.x);
+        const double sweep = std::atan2(previous.cross(next), previous.dot(next));
+        const size_t pieces = static_cast<size_t>(
+            std::max(1.0, std::ceil(std::abs(sweep) / (3.14159265358979323846 / 12.0))));
+        for (size_t i = 0; i <= pieces; ++i) {
+            const double angle = startAngle + sweep * static_cast<double>(i) / pieces;
+            append(point + Raster::Vec2{std::cos(angle), std::sin(angle)} * radius, false);
+        }
+    } else if (join == 0 &&
+               (intersection - point).length() <= std::max(1.0, miterLimit) * radius + 1e-9) {
+        append(intersection, true);
+    } else {
+        append(first, true);
+        append(second, true);
+    }
+}
+
+static OffsetBoundary offsetPolyline(const std::vector<Raster::Vec2>& points, bool closed,
+                                    double side, double radius, uint32_t join,
+                                    double miterLimit) {
+    OffsetBoundary boundary;
+    const size_t count = points.size();
+    if (count < 2) return boundary;
+    const size_t first = closed ? 0 : 1;
+    const size_t last = closed ? count : count - 1;
+    const auto direction = [&](size_t a, size_t b) {
+        const Raster::Vec2 delta = points[b] - points[a];
+        const double length = delta.length();
+        return length > 1e-12 ? delta * (1.0 / length) : Raster::Vec2::ZERO;
+    };
+    const auto leftNormal = [](const Raster::Vec2& vector) {
+        return Raster::Vec2{-vector.y, vector.x};
+    };
+    if (!closed) {
+        const Raster::Vec2 firstDirection = direction(0, 1);
+        const Raster::Vec2 firstOffset = leftNormal(firstDirection) * (side * radius);
+        boundary.points.push_back(points.front() + firstOffset);
+        for (size_t i = 1; i + 1 < count; ++i) {
+            const Raster::Vec2 before = direction(i - 1, i);
+            const Raster::Vec2 after = direction(i, i + 1);
+            const Raster::Vec2 previous = leftNormal(before) * (side * radius);
+            const Raster::Vec2 next = leftNormal(after) * (side * radius);
+            const bool outer = before.cross(after) * side < 0.0;
+            appendOffsetJoin(boundary, points[i], previous, next, before, after,
+                             radius, outer, join, miterLimit);
+        }
+        const Raster::Vec2 lastDirection = direction(count - 2, count - 1);
+        boundary.points.push_back(points.back() +
+            leftNormal(lastDirection) * (side * radius));
+        return boundary;
+    }
+
+    double area = 0.0;
+    for (size_t i = 0; i < count; ++i)
+        area += points[i].cross(points[(i + 1) % count]);
+    if (std::abs(area) <= 1e-12) return boundary;
+    const double winding = area > 0.0 ? 1.0 : -1.0;
+    const double offsetSide = winding * side;
+    for (size_t i = first; i < last; ++i) {
+        const size_t previousIndex = (i + count - 1) % count;
+        const size_t nextIndex = (i + 1) % count;
+        const Raster::Vec2 before = direction(previousIndex, i);
+        const Raster::Vec2 after = direction(i, nextIndex);
+        const Raster::Vec2 previous = Raster::Vec2{before.y, -before.x} *
+            (offsetSide * radius);
+        const Raster::Vec2 next = Raster::Vec2{after.y, -after.x} *
+            (offsetSide * radius);
+        const bool outer = before.cross(after) * winding * side > 0.0;
+        appendOffsetJoin(boundary, points[i], previous, next, before, after,
+                         radius, outer, join, miterLimit);
+    }
+    return boundary;
+}
+
+static std::vector<Raster::Vec2> offsetSourcePoints(const ShapeContour& path) {
+    std::vector<Raster::Vec2> points;
+    points.reserve(path.points.size());
+    for (const Raster::Vec2& point : path.points)
+        if (points.empty() || (points.back() - point).length() > 1e-9)
+            points.push_back(point);
+    if (path.closed && points.size() > 1 &&
+        (points.front() - points.back()).length() <= 1e-9)
+        points.pop_back();
+    return points;
+}
+
+static ShapeContour makeOffsetContour(const OffsetBoundary& boundary) {
+    ShapeContour result;
+    if (boundary.points.size() < 3) return result;
+    result.closed = true;
+    result.points = boundary.points;
+    result.points.push_back(result.points.front());
+    for (size_t i = 0; i + 1 < result.points.size(); ++i)
+        result.vertices.push_back(i);
+    result.corners = boundary.corners;
+    return result;
+}
+
+static double distanceToShapePath(const std::vector<Raster::Vec2>& path, bool closed,
+                                  const Raster::Vec2& point) {
+    double best = std::numeric_limits<double>::infinity();
+    const size_t segmentCount = path.size() > 1
+        ? path.size() - 1 + (closed ? 1 : 0) : 0;
+    for (size_t i = 0; i < segmentCount; ++i) {
+        const Raster::Vec2 a = path[i % path.size()];
+        const Raster::Vec2 b = path[(i + 1) % path.size()];
+        const Raster::Vec2 delta = b - a;
+        const double lengthSquared = delta.dot(delta);
+        const double t = lengthSquared > 1e-12
+            ? std::clamp((point - a).dot(delta) / lengthSquared, 0.0, 1.0) : 0.0;
+        best = std::min(best, (point - (a + delta * t)).length());
+    }
+    return best;
+}
+
+static std::optional<Raster::Vec2> offsetDeepPoint(const ShapeContour& contour) {
+    if (contour.points.size() < 4) return std::nullopt;
+    double minX = contour.points[0].x, maxX = minX;
+    double minY = contour.points[0].y, maxY = minY;
+    for (const Raster::Vec2& point : contour.points) {
+        minX = std::min(minX, point.x);
+        maxX = std::max(maxX, point.x);
+        minY = std::min(minY, point.y);
+        maxY = std::max(maxY, point.y);
+    }
+    if (!(maxX > minX && maxY > minY)) return std::nullopt;
+    std::optional<std::pair<double, Raster::Vec2>> best;
+    for (double fraction : {0.5, 0.3, 0.7}) {
+        const double y = minY + (maxY - minY) * fraction;
+        std::vector<double> crossings;
+        for (size_t i = 1; i < contour.points.size(); ++i) {
+            const Raster::Vec2 a = contour.points[i - 1];
+            const Raster::Vec2 b = contour.points[i];
+            if ((a.y <= y) != (b.y <= y))
+                crossings.push_back(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+        }
+        std::sort(crossings.begin(), crossings.end());
+        for (size_t i = 1; i < crossings.size(); i += 2) {
+            const double width = crossings[i] - crossings[i - 1];
+            if (!best || width > best->first)
+                best = std::make_pair(width,
+                    Raster::Vec2{(crossings[i] + crossings[i - 1]) * 0.5, y});
+        }
+    }
+    return best ? std::optional<Raster::Vec2>(best->second) : std::nullopt;
+}
+
+// after EffectCraft crates/path/src/ops.rs offset
+static ShapeContour offsetShapeContour(const ShapeContour& path, double amount,
+                                      uint32_t join, double miterLimit) {
+    if (!std::isfinite(amount)) return {};
+    const std::vector<Raster::Vec2> points = offsetSourcePoints(path);
+    if (amount == 0.0) return path;
+    if ((path.closed && points.size() < 3) || (!path.closed && points.size() < 2))
+        return {};
+    if (!path.closed && amount < 0.0) return {};
+    const double radius = std::abs(amount);
+    if (path.closed) {
+        const double signedArea = [&]() {
+            double area = 0.0;
+            for (size_t i = 0; i < points.size(); ++i)
+                area += points[i].cross(points[(i + 1) % points.size()]);
+            return area;
+        }();
+        OffsetBoundary boundary = offsetPolyline(
+            points, true, amount >= 0.0 ? 1.0 : -1.0, radius, join, miterLimit);
+        ShapeContour result = makeOffsetContour(boundary);
+        if (result.points.empty()) return result;
+        double resultArea = 0.0;
+        for (size_t i = 1; i < result.points.size(); ++i)
+            resultArea += result.points[i - 1].cross(result.points[i]);
+        if (signedArea * resultArea <= 1e-9) return {};
+        if (amount < 0.0) {
+            const std::optional<Raster::Vec2> deep = offsetDeepPoint(result);
+            if (deep && distanceToShapePath(points, true, *deep) <
+                radius * (1.0 - 1e-4) - 1e-6)
+                return {};
+        }
+        return result;
+    }
+
+    OffsetBoundary left = offsetPolyline(points, false, 1.0, radius, join, miterLimit);
+    OffsetBoundary right = offsetPolyline(points, false, -1.0, radius, join, miterLimit);
+    if (left.points.size() < 2 || right.points.size() < 2) return {};
+    OffsetBoundary outline = std::move(left);
+    for (size_t i = right.points.size(); i-- > 0;) {
+        const size_t index = outline.points.size();
+        outline.points.push_back(right.points[i]);
+        if (i == 0 || i + 1 == right.points.size())
+            outline.corners.push_back(index);
+    }
+    return makeOffsetContour(outline);
+}
+
+// after EffectCraft crates/path/src/ops.rs offset copies
+static void offsetShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
+                             double amount, uint32_t join, double miterLimit,
+                             double copies, double copyOffset) {
+    if (!std::isfinite(amount) || !std::isfinite(copies) || !std::isfinite(copyOffset)) {
+        for (size_t slot : live)
+            if (slot < arena.size()) arena[slot].paths.clear();
+        return;
+    }
+    const size_t copyCount = static_cast<size_t>(
+        std::clamp(std::round(copies), 1.0, 1000.0));
+    for (size_t slot : live) {
+        if (slot >= arena.size()) continue;
+        std::vector<ShapeContour> paths;
+        for (const ShapeContour& path : arena[slot].paths) {
+            for (size_t i = 0; i < copyCount; ++i) {
+                const double distance = amount * (static_cast<double>(i) + 1.0 + copyOffset);
+                ShapeContour offset = offsetShapeContour(path, distance, join, miterLimit);
+                if (!offset.points.empty()) paths.push_back(std::move(offset));
+            }
+        }
+        arena[slot].paths = std::move(paths);
+    }
+}
+
 // after EffectCraft crates/path/src/ops.rs pucker_bloat
 static void puckerShapeSlots(std::vector<ShapeSlot>& arena, const std::vector<size_t>& live,
                              double amount) {
@@ -1074,6 +1326,17 @@ static void collectShapeDraws(const Props::PropGroup& contents, Project::Tick ti
         if (group->match_id == "pucker") {
             puckerShapeSlots(arena, live,
                 shapeScalar(*group, "amount", time, 0.0) / 100.0);
+            continue;
+        }
+
+        if (group->match_id == "offset") {
+            offsetShapeSlots(arena, live,
+                shapeScalar(*group, "amount", time, 10.0),
+                static_cast<uint32_t>(std::clamp(
+                    shapeScalar(*group, "join", time, 0.0), 0.0, 2.0)),
+                shapeScalar(*group, "miter", time, 4.0),
+                shapeScalar(*group, "copies", time, 1.0),
+                shapeScalar(*group, "copyOffset", time, 0.0));
             continue;
         }
 

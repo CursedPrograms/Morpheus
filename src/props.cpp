@@ -815,6 +815,20 @@ PropGroup shapePucker(Ids& ids, double amount) {
     return group;
 }
 
+// after EffectCraft crates/project/src/build.rs shape_simple_op
+PropGroup shapeOffset(Ids& ids, double amount, uint32_t join, double copies, double copyOffset) {
+    PropGroup group = ids.group("offset", "Offset Paths 1");
+    group.kind.tag = GroupKindTag::Indexed;
+    group.with(ids.prop("amount", "Amount", Value::Scalar(amount))
+        .with_ui(ParamUi{ParamUiKind::Pixels}));
+    group.with(ids.prop("join", "Line Join", Value::Enum(join))
+        .with_ui(ParamUi::make_popup({"Miter Join", "Round Join", "Bevel Join"})));
+    group.with(ids.prop("miter", "Miter Limit", Value::Scalar(4.0)));
+    group.with(ids.prop("copies", "Copies", Value::Scalar(copies)));
+    group.with(ids.prop("copyOffset", "Copy Offset", Value::Scalar(copyOffset)));
+    return group;
+}
+
 // after EffectCraft crates/engine/src/cmd/layer/contents.rs add_shape_item
 std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
     if (kind == "group")
@@ -841,6 +855,8 @@ std::optional<PropGroup> shapeItem(Ids& ids, const std::string& kind) {
         return shapeZigZag(ids, 10.0, 5.0, false);
     if (kind == "pucker")
         return shapePucker(ids, 0.0);
+    if (kind == "offset")
+        return shapeOffset(ids, 10.0, 0, 1.0, 0.0);
     return std::nullopt;
 }
 
