@@ -1,0 +1,43 @@
+# Builds Morpheus for Windows on GitHub's own machines whenever a release is published, and attaches the
+# zip (and the installer, when the build makes one) to that release. Run it by hand from the Actions
+# tab to get the build as a downloadable artifact without releasing.
+name: Release build
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-2022          # has Visual Studio 2022, which build.bat asks for
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - name: Build
+        shell: cmd
+        working-directory: .
+        run: echo.| call build.bat
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: pwsh
+        working-directory: .
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $files = Get-ChildItem dist -File | Where-Object { $_.Extension -in '.zip', '.exe' } | ForEach-Object FullName
+          if (-not $files) { throw "the build made nothing in dist\" }
+          gh release upload "${{ github.event.release.tag_name }}" $files --clobber
+      - name: Keep the build (runs started by hand)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: Morpheus-windows
+          path: |
+            ./dist/*.zip
+            ./dist/*.exe
