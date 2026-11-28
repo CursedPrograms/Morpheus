@@ -25,7 +25,7 @@ FetchContent_MakeAvailable(imgui)
 
 # stb single-file headers
 set(STB_DIR ${CMAKE_SOURCE_DIR}/external/stb)
-foreach(f stb_image.h stb_truetype.h)
+foreach(f stb_image.h stb_image_write.h stb_truetype.h)
     if(NOT EXISTS ${STB_DIR}/${f})
         file(DOWNLOAD https://raw.githubusercontent.com/nothings/stb/master/${f} ${STB_DIR}/${f})
     endif()
